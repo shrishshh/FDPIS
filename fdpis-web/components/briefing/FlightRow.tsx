@@ -4,10 +4,13 @@ import { useRouter } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 import type { Flight } from "@/lib/types";
 import { RiskScore } from "@/components/Risk";
-import { formatClock, formatPercent } from "@/lib/format";
+import { bandSeverity, formatClock } from "@/lib/format";
 
 /** Slack under 20 minutes is where cascades start — call it out in place. */
-function SlackCell({ minutes }: { minutes: number }) {
+function SlackCell({ minutes }: { minutes: number | null }) {
+  if (minutes === null) {
+    return <span className="text-sm text-ink-300">--</span>;
+  }
   const tight = minutes <= 20;
   return (
     <span
@@ -21,17 +24,23 @@ function SlackCell({ minutes }: { minutes: number }) {
   );
 }
 
-export function FlightRow({ flight, rank }: { flight: Flight; rank?: number }) {
+export function FlightRow({
+  flight, rank, date,
+}: { flight: Flight; rank?: number; date: string }) {
   const router = useRouter();
-  const href = `/cascade/${encodeURIComponent(flight.id)}`;
+  // The cascade endpoint is keyed by tail + date + leg, not by flight id.
+  const href =
+    flight.tail && flight.legIndex != null
+      ? `/cascade/${encodeURIComponent(flight.tail)}/${encodeURIComponent(date)}/${flight.legIndex}`
+      : null;
 
   return (
     <tr
-      onClick={() => router.push(href)}
+      onClick={() => href && router.push(href)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          router.push(href);
+          if (href) router.push(href);
         }
       }}
       tabIndex={0}
@@ -46,7 +55,7 @@ export function FlightRow({ flight, rank }: { flight: Flight; rank?: number }) {
               {rank}
             </span>
           ) : null}
-          <RiskScore score={flight.riskScore} />
+          <RiskScore score={flight.riskScore} severity={bandSeverity(flight.riskBand)} />
         </div>
       </td>
       <td className="px-3 py-3">
@@ -55,9 +64,7 @@ export function FlightRow({ flight, rank }: { flight: Flight; rank?: number }) {
         </span>
       </td>
       <td className="px-3 py-3">
-        <span className="text-sm text-ink-600" title={flight.carrierName}>
-          {flight.carrier}
-        </span>
+        <span className="text-sm text-ink-600">{flight.carrier}</span>
       </td>
       <td className="px-3 py-3">
         <span className="tnum text-sm font-medium text-ink-800">
@@ -76,16 +83,28 @@ export function FlightRow({ flight, rank }: { flight: Flight; rank?: number }) {
       </td>
       <td className="px-3 py-3">
         <span className="tnum whitespace-nowrap text-sm text-ink-600">
-          leg {flight.legIndex} of {flight.legCount}
+          {flight.legIndex != null && flight.legCount != null
+            ? `leg ${flight.legIndex} of ${flight.legCount}`
+            : "--"}
         </span>
       </td>
       <td className="px-3 py-3">
         <SlackCell minutes={flight.turnaroundSlackMin} />
       </td>
       <td className="px-3 py-3">
-        <span className="tnum text-sm font-medium text-ink-800">
-          {formatPercent(flight.delayProbability, 0)}
-        </span>
+        {flight.actualDelayMinutes === null ? (
+          <span className="text-sm text-ink-300">--</span>
+        ) : (
+          <span
+            className={`tnum text-sm font-medium ${
+              flight.actuallyDelayed15 ? "text-risk-critical" : "text-ink-600"
+            }`}
+            title="Historical ground truth from the dataset, not a prediction"
+          >
+            {flight.actualDelayMinutes > 0 ? "+" : ""}
+            {Math.round(flight.actualDelayMinutes)}
+          </span>
+        )}
       </td>
       <td className="py-3 pl-3 pr-5 lg:pr-6">
         <ChevronRight

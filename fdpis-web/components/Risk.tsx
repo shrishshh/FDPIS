@@ -2,8 +2,10 @@ import type { Severity } from "@/lib/types";
 import { SEVERITY_STYLES, riskSeverity } from "@/lib/format";
 
 /** Score + bar. The number always carries the meaning; colour reinforces it. */
-export function RiskScore({ score, width = 72 }: { score: number; width?: number }) {
-  const style = SEVERITY_STYLES[riskSeverity(score)];
+export function RiskScore({
+  score, width = 72, severity,
+}: { score: number; width?: number; severity?: Severity }) {
+  const style = SEVERITY_STYLES[severity ?? riskSeverity(score)];
   return (
     <div className="flex items-center gap-3">
       <span className="tnum w-7 text-right text-sm font-semibold text-ink-900">

@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Clock,
   ListChecks,
   Plane,
@@ -44,6 +45,24 @@ export function RecommendationPanel({
         <span className="tnum ml-auto rounded-full bg-ink-100 px-2 py-0.5 text-xs font-semibold text-ink-600">
           {recommendations.length}
         </span>
+      </div>
+
+      {/*
+        Always visible, never behind a hover: this panel is a client-side
+        threshold demo, not a verified Layer 5 rule engine, and the thresholds
+        themselves are unverified against the actual regulatory source. See
+        lib/api/recommendations.ts for the full disclosure.
+      */}
+      <div className="flex items-start gap-2 border-b border-ink-200 bg-[#fdf4e0] px-5 py-2.5">
+        <AlertTriangle
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#8a5d00]"
+          aria-hidden
+        />
+        <p className="text-[0.6875rem] leading-relaxed text-[#8a5d00]">
+          Indicative actions derived from published operational thresholds.
+          Layer 5 rule engine is not yet implemented; thresholds pending
+          regulatory verification against DGCA FDTL requirements.
+        </p>
       </div>
 
       {recommendations.length === 0 ? (

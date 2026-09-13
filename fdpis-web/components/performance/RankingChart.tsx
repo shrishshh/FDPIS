@@ -30,7 +30,7 @@ export function RankingChart({
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={rows} margin={{ top: 12, right: 20, bottom: 4, left: 0 }}>
             <CartesianGrid stroke={VIZ.grid} vertical={false} />
-            <XAxis dataKey="depthLabel" {...AXIS_PROPS} />
+            <XAxis dataKey="depthPct" {...AXIS_PROPS} tickFormatter={(v: number) => `Top ${v}%`} />
             <YAxis
               {...AXIS_PROPS}
               width={52}

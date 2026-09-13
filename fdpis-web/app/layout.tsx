@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Nav } from "@/components/Nav";
+import { DataScopeProvider } from "@/components/DataScope";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -23,8 +24,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={inter.variable}>
       <body className="min-h-screen antialiased">
-        <Nav />
-        <main>{children}</main>
+        <DataScopeProvider>
+          <Nav />
+          <main>{children}</main>
+        </DataScopeProvider>
       </body>
     </html>
   );

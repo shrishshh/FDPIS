@@ -8,9 +8,8 @@ import {
   ListChecks,
   ChevronRight,
 } from "lucide-react";
-import { MetricCard } from "@/components/MetricCard";
 import { HeroDiagram } from "@/components/HeroDiagram";
-import { getModelPerformance } from "@/lib/api";
+import { HeadlineMetrics } from "@/components/HeadlineMetrics";
 
 const LAYERS = [
   {
@@ -45,8 +44,7 @@ const LAYERS = [
   },
 ];
 
-export default async function LandingPage() {
-  const performance = await getModelPerformance();
+export default function LandingPage() {
 
   return (
     <div className="bg-white">
@@ -99,16 +97,7 @@ export default async function LandingPage() {
             </h2>
           </div>
 
-          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
-            {performance.headline.map((metric) => (
-              <MetricCard
-                key={metric.id}
-                value={metric.value}
-                label={metric.label}
-                detail={metric.detail}
-              />
-            ))}
-          </div>
+          <HeadlineMetrics />
 
           <p className="mt-6 text-sm text-ink-500">
             Full ablation, model comparison and propagation accuracy on the{" "}

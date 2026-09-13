@@ -1,113 +1,117 @@
 import type { PresetScenario, Rotation, RotationSummary } from "@/lib/types";
-import { findRotation, getAllRotations } from "@/lib/mock/network";
-import { simulateLatency } from "@/lib/api/config";
+import { apiGet, qs } from "@/lib/api/client";
 
-function toSummary(rotation: Rotation): RotationSummary {
-  const stations = [
-    rotation.legs[0].origin,
-    ...rotation.legs.map((l) => l.destination),
-  ];
+interface RawRotationSummary {
+  tail: string;
+  carrier: string;
+  legs: number;
+  first_origin: string;
+  last_dest: string;
+}
+
+interface RawLeg {
+  leg_num: number;
+  flight_number: string;
+  origin: string;
+  dest: string;
+  scheduled_dep: string | null;
+  scheduled_arr: string | null;
+  available_slack: number | null;
+  continuous_rotation: boolean;
+  actual_dep_delay: number | null;
+  actual_arr_delay: number | null;
+}
+
+interface RawRotation {
+  tail: string;
+  date: string;
+  carrier: string;
+  total_legs: number;
+  legs: RawLeg[];
+}
+
+/** GET /api/rotations?date=&carrier=&min_legs= */
+export async function listRotations(
+  date: string,
+  carrier?: string,
+  minLegs = 3,
+): Promise<RotationSummary[]> {
+  const raw = await apiGet<RawRotationSummary[]>(
+    `/api/rotations${qs({ date, carrier, min_legs: minLegs })}`,
+  );
+  return raw.map((r) => ({
+    tail: r.tail,
+    carrier: r.carrier,
+    legCount: r.legs,
+    firstOrigin: r.first_origin,
+    lastDestination: r.last_dest,
+    routeLabel: `${r.first_origin} → ${r.last_dest}`,
+  }));
+}
+
+/** GET /api/rotation/{tail}/{date} */
+export async function getRotation(tail: string, date: string): Promise<Rotation> {
+  const r = await apiGet<RawRotation>(
+    `/api/rotation/${encodeURIComponent(tail)}/${encodeURIComponent(date)}`,
+  );
   return {
-    tail: rotation.tail,
-    carrier: rotation.carrier,
-    carrierName: rotation.carrierName,
-    aircraftType: rotation.aircraftType,
-    legCount: rotation.legs.length,
-    firstOrigin: stations[0],
-    lastDestination: stations[stations.length - 1],
-    routeLabel: stations.join(" → "),
+    tail: r.tail,
+    date: r.date,
+    carrier: r.carrier,
+    legCount: r.total_legs,
+    legs: r.legs.map((l) => ({
+      legIndex: l.leg_num,
+      flightNumber: l.flight_number,
+      origin: l.origin,
+      destination: l.dest,
+      scheduledDeparture: l.scheduled_dep,
+      scheduledArrival: l.scheduled_arr,
+      turnaroundSlackMin: l.available_slack,
+      continuousRotation: l.continuous_rotation,
+      actualDepDelay: l.actual_dep_delay,
+      actualArrDelay: l.actual_arr_delay,
+    })),
   };
 }
 
 /**
- * Every aircraft operating today, for the tail-number picker.
+ * Demo scenarios for the live entry screen.
  *
- * Backend: GET /api/v1/rotations?date=...
+ * The backend has no scenarios endpoint, so these are resolved against real
+ * rotations for the selected date: pick a long rotation departing the named
+ * station, so a preset can never point at a leg that does not exist.
  */
-export async function listRotations(): Promise<RotationSummary[]> {
-  await simulateLatency(60);
-  return getAllRotations()
-    .map(toSummary)
-    .sort((a, b) => a.tail.localeCompare(b.tail));
-}
-
-/**
- * One aircraft's full day of flying, in operating order.
- *
- * Backend: GET /api/v1/rotations/{tail}?date=...
- */
-export async function getRotation(tail: string): Promise<Rotation | null> {
-  await simulateLatency(60);
-  return findRotation(tail) ?? null;
-}
-
-/**
- * Demo scenarios for the live entry screen. Resolved against real rotations so
- * a preset can never point at a leg that does not exist.
- *
- * Backend: GET /api/v1/scenarios  (or drop this endpoint in production)
- */
-export async function getPresetScenarios(): Promise<PresetScenario[]> {
-  await simulateLatency(40);
-
+export async function getPresetScenarios(date: string): Promise<PresetScenario[]> {
   const wanted = [
-    {
-      id: "ord-mechanical",
+    { id: "mech", station: "ORD", delayMinutes: 45,
       label: "45 min mechanical at ORD",
-      description:
-        "Hydraulic write-up found on the walkaround; engineering called to the gate.",
-      station: "ORD",
-      delayMinutes: 45,
-    },
-    {
-      id: "dfw-weather",
+      description: "Hydraulic write-up found on the walkaround; engineering at the gate." },
+    { id: "wx", station: "DFW", delayMinutes: 90,
       label: "90 min weather hold at DFW",
-      description:
-        "Convective cell over the field; ground stop issued by traffic management.",
-      station: "DFW",
-      delayMinutes: 90,
-    },
-    {
-      id: "ewr-atc",
+      description: "Convective cell over the field; ground stop issued by traffic management." },
+    { id: "atc", station: "EWR", delayMinutes: 30,
       label: "30 min ATC flow at EWR",
-      description:
-        "Departure metering in effect; wheels-up time reissued 30 minutes late.",
-      station: "EWR",
-      delayMinutes: 30,
-    },
+      description: "Departure metering in effect; wheels-up time reissued 30 minutes late." },
   ];
 
-  const rotations = getAllRotations();
-  const scenarios: PresetScenario[] = [];
+  const rotations = await listRotations(date, undefined, 5);
+  const out: PresetScenario[] = [];
 
   for (const spec of wanted) {
-    // Prefer a mid-rotation leg with plenty left to break: the aircraft is
-    // already airborne in the day, which is how disruption actually arrives.
-    let best: { rotation: Rotation; legIndex: number; rank: number } | null = null;
-
-    for (const rotation of rotations) {
-      for (const leg of rotation.legs) {
-        if (leg.origin !== spec.station) continue;
-        const downstream = rotation.legs.length - leg.legIndex;
-        if (downstream < 2) continue;
-        const rank = downstream + (leg.legIndex >= 2 ? 1.5 : 0);
-        if (!best || rank > best.rank) {
-          best = { rotation, legIndex: leg.legIndex, rank };
-        }
-      }
-    }
-
-    if (best) {
-      scenarios.push({
-        id: spec.id,
-        label: spec.label,
-        description: spec.description,
-        tail: best.rotation.tail,
-        legIndex: best.legIndex,
-        delayMinutes: spec.delayMinutes,
-      });
-    }
+    // Prefer a rotation starting at the named station so leg 2 departs from it.
+    const hit =
+      rotations.find((r) => r.firstOrigin === spec.station && r.legCount >= 5) ??
+      rotations.find((r) => r.legCount >= 5);
+    if (!hit) continue;
+    out.push({
+      id: spec.id,
+      label: spec.label,
+      description: spec.description,
+      tail: hit.tail,
+      date,
+      legIndex: 2,
+      delayMinutes: spec.delayMinutes,
+    });
   }
-
-  return scenarios;
+  return out;
 }

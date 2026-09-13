@@ -1,11 +1,12 @@
 /**
  * The only data boundary in the application.
  *
- * Components import from here (or from the modules below) and never from
- * /lib/mock. Replacing the bodies of these functions with fetch() calls is the
- * entire backend integration.
+ * Every function here calls the FastAPI backend. Components import from this
+ * module and never construct a URL of their own.
  */
+export * from "@/lib/api/client";
 export * from "@/lib/api/config";
+export * from "@/lib/api/reference";
 export * from "@/lib/api/flights";
 export * from "@/lib/api/rotations";
 export * from "@/lib/api/cascade";

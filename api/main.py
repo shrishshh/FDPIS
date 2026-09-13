@@ -188,6 +188,37 @@ def briefing(date: str = Query(..., description="YYYY-MM-DD"),
                                     returned=len(flights), flights=flights)
 
 
+@app.get("/api/flights/{tail}/{date}/{leg_num}", response_model=schemas.BriefingFlight)
+def flight(tail: str, date: str, leg_num: int):
+    """One flight leg, by tail/date/leg. Reuses the cached day-wide scoring
+    that /api/briefing already computes, so this stays O(1) after the first
+    lookup for that date rather than rescoring the whole day per flight."""
+    _parse_date(date)
+    day = _scored_day(date, None)
+    if day.empty:
+        raise HTTPException(404, f"no flights for date {date}")
+    match = day[(day["TAIL_NUM"] == tail) & (day["LEG_NUM"] == leg_num)]
+    if match.empty:
+        raise HTTPException(404, f"no flight for tail {tail} on {date} leg {leg_num}")
+    r = next(match.itertuples())
+    return schemas.BriefingFlight(
+        flight_id=f"{r.OP_UNIQUE_CARRIER}{int(r.OP_CARRIER_FL_NUM)}"
+                  f"-{r.TAIL_NUM}-{int(r.LEG_NUM)}",
+        carrier=str(r.OP_UNIQUE_CARRIER),
+        flight_number=f"{r.OP_UNIQUE_CARRIER}{int(r.OP_CARRIER_FL_NUM)}",
+        tail=None if pd.isna(r.TAIL_NUM) else str(r.TAIL_NUM),
+        origin=str(r.ORIGIN), dest=str(r.DEST),
+        scheduled_dep=_hhmm(r.CRS_DEP_MIN), scheduled_arr=_hhmm(r.CRS_ARR_MIN),
+        leg_num=int(r.LEG_NUM),
+        total_legs=None if pd.isna(r.TAIL_LEGS_TODAY) else int(r.TAIL_LEGS_TODAY),
+        available_slack=_opt(r.AVAILABLE_SLACK),
+        risk_score=int(round(float(r.risk_prob) * 100)),
+        risk_band=str(r.risk_band),
+        actual_delay_minutes=_opt(r.DEP_DELAY),
+        actually_delayed_15=None if pd.isna(r.DEP_DEL15) else bool(r.DEP_DEL15),
+    )
+
+
 @app.get("/api/briefing/summary", response_model=schemas.BriefingSummary)
 def briefing_summary(date: str = Query(...),
                      carrier: str | None = Query(None, min_length=2, max_length=3)):

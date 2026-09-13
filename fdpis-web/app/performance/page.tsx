@@ -1,14 +1,15 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
 import { CircleAlert, Sigma } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { AblationCharts } from "@/components/performance/AblationCharts";
 import { RankingChart } from "@/components/performance/RankingChart";
 import { DepthCharts } from "@/components/performance/DepthCharts";
 import { getModelPerformance } from "@/lib/api";
+import type { ModelPerformance } from "@/lib/types";
+import { ErrorState, LoadingState } from "@/components/States";
 import { formatCount, formatDecimal, formatPercent } from "@/lib/format";
-
-export const metadata = {
-  title: "Model performance — FDPIS",
-};
 
 function Section({
   id,
@@ -44,8 +45,39 @@ function Section({
   );
 }
 
-export default async function PerformancePage() {
-  const perf = await getModelPerformance();
+export default function PerformancePage() {
+  const [perf, setPerf] = useState<ModelPerformance | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [loading, setLoading] = useState(true);
+  const [nonce, setNonce] = useState(0);
+  const retry = useCallback(() => setNonce((n) => n + 1), []);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    setError(null);
+    getModelPerformance()
+      .then((p) => { if (live) setPerf(p); })
+      .catch((e) => { if (live) setError(e); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [nonce]);
+
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-[1600px] px-5 py-10 lg:px-8">
+        <LoadingState label="Loading model metrics" />
+      </div>
+    );
+  }
+  if (error || !perf) {
+    return (
+      <div className="mx-auto max-w-[1600px] px-5 py-10 lg:px-8">
+        <ErrorState error={error} onRetry={retry} context="Could not load model performance" />
+      </div>
+    );
+  }
+
   const validation = perf.cascadeValidation;
 
   return (
@@ -88,7 +120,7 @@ export default async function PerformancePage() {
                       >
                         <td className="px-5 py-3 font-semibold text-ink-900">{row.group}</td>
                         <td className={`px-5 py-3 ${best ? "font-semibold text-ink-900" : "text-ink-700"}`}>
-                          {row.label}
+                          {row.group}
                         </td>
                         <td className="tnum px-5 py-3 text-right text-ink-700">{row.featureCount}</td>
                         <td className={`tnum px-5 py-3 text-right ${best ? "font-bold text-accent-700" : "text-ink-800"}`}>
@@ -116,7 +148,7 @@ export default async function PerformancePage() {
                 AUC from rotation features alone
               </p>
               <p className="mt-3 text-sm leading-relaxed text-ink-600">
-                {perf.ablationCallout}
+                {perf.ablationNote}
               </p>
             </aside>
           </div>
@@ -194,7 +226,7 @@ export default async function PerformancePage() {
           description="The system is a ranker, not an oracle. What matters is how many genuinely delayed flights sit at the top of the list an operations team has time to read."
         >
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,480px)]">
-            <RankingChart rows={perf.ranking} baseRate={perf.baseDelayRate} />
+            <RankingChart rows={perf.ranking} baseRate={perf.classifier.baseDelayRate} />
 
             <div className="card overflow-x-auto scrollbar-slim">
               <table className="w-full min-w-[420px] border-collapse text-sm">
@@ -209,13 +241,13 @@ export default async function PerformancePage() {
                 <tbody>
                   {perf.ranking.map((row) => (
                     <tr
-                      key={row.depthLabel}
+                      key={`Top ${row.depthPct}%`}
                       className={`border-t border-ink-200 ${
-                        row.depthFraction === 0.01 ? "bg-accent-50/60" : ""
+                        row.depthPct === 1 ? "bg-accent-50/60" : ""
                       }`}
                     >
                       <td className="px-5 py-3 font-semibold text-ink-900">
-                        {row.depthLabel}
+                        {`Top ${row.depthPct}%`}
                       </td>
                       <td className="tnum px-5 py-3 text-right text-ink-700">
                         {formatCount(row.flightsReviewed)}
@@ -232,7 +264,7 @@ export default async function PerformancePage() {
                     <td className="px-5 py-3 text-ink-500">Base delay rate</td>
                     <td className="px-5 py-3" />
                     <td className="tnum px-5 py-3 text-right text-ink-600">
-                      {formatPercent(perf.baseDelayRate)}
+                      {formatPercent(perf.classifier.baseDelayRate)}
                     </td>
                     <td className="tnum px-5 py-3 text-right text-ink-500">1.00x</td>
                   </tr>
@@ -302,6 +334,109 @@ export default async function PerformancePage() {
         </Section>
 
         {/* Cascade detection validation */}
+        {/* Layer 4 gate */}
+        <Section
+          id="gate"
+          eyebrow="Propagation engine"
+          title="How well the gate decides whether a delay travels"
+          description="Stage 1 of the hurdle model: does anything propagate at all. The threshold is selected on validation, never on test."
+        >
+          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="card card-pad">
+              <p className="eyebrow">Gate AUC</p>
+              <p className="tnum mt-2 text-metric-lg font-semibold text-accent-700">
+                {formatDecimal(perf.propagation.gateAuc, 4)}
+              </p>
+              <p className="mt-2 text-sm text-ink-500">
+                Discrimination between legs that propagate delay and those that absorb it.
+              </p>
+            </div>
+            <div className="card card-pad">
+              <p className="eyebrow">Gate precision / recall</p>
+              <p className="tnum mt-2 text-metric-lg font-semibold text-ink-900">
+                {formatDecimal(perf.propagation.gatePrecision, 3)}
+                <span className="mx-1 text-lg text-ink-300">/</span>
+                {formatDecimal(perf.propagation.gateRecall, 3)}
+              </p>
+              <p className="mt-2 text-sm text-ink-500">
+                At threshold {perf.propagation.gateThreshold}, selected on{" "}
+                {perf.propagation.thresholdSelectedOn}.
+              </p>
+            </div>
+            <div className="card card-pad">
+              <p className="eyebrow">MAE, all / cascades</p>
+              <p className="tnum mt-2 text-metric-lg font-semibold text-ink-900">
+                {perf.propagation.maeAllCandidates}
+                <span className="mx-1 text-lg text-ink-300">/</span>
+                {perf.propagation.maeActualCascades}
+              </p>
+              <p className="mt-2 text-sm text-ink-500">Minutes of single-hop error.</p>
+            </div>
+            <div className="card card-pad">
+              <p className="eyebrow">Interval coverage</p>
+              <p className="tnum mt-2 text-metric-lg font-semibold text-ink-900">
+                {formatPercent(perf.propagation.intervalCoverage)}
+              </p>
+              <p className="mt-2 text-sm text-ink-500">
+                Against a nominal 80% band &mdash; a documented miss, not a rounding.
+              </p>
+            </div>
+          </div>
+        </Section>
+
+        {/* Per-carrier */}
+        <Section
+          id="per-carrier"
+          eyebrow="Deployment reality"
+          title="Precision per carrier, not pooled"
+          description="A single airline sees only its own flights. Pooling across carriers flatters the headline; this is what one operator would actually get."
+        >
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)]">
+            <div className="card overflow-x-auto scrollbar-slim">
+              <table className="w-full min-w-[460px] border-collapse text-sm">
+                <thead>
+                  <tr className="table-head">
+                    <th scope="col" className="px-5 py-3 text-left font-semibold">Carrier</th>
+                    <th scope="col" className="px-5 py-3 text-right font-semibold">Test flights</th>
+                    <th scope="col" className="px-5 py-3 text-right font-semibold">Precision@1%</th>
+                    <th scope="col" className="px-5 py-3 text-right font-semibold">Base rate</th>
+                    <th scope="col" className="px-5 py-3 text-right font-semibold">Lift</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perf.perCarrier.rows.map((row) => (
+                    <tr key={row.carrier} className="border-t border-ink-200">
+                      <td className="px-5 py-3 font-semibold text-ink-900">{row.carrier}</td>
+                      <td className="tnum px-5 py-3 text-right text-ink-700">{formatCount(row.testFlights)}</td>
+                      <td className="tnum px-5 py-3 text-right font-medium text-ink-900">{formatPercent(row.precision)}</td>
+                      <td className="tnum px-5 py-3 text-right text-ink-600">{formatPercent(row.baseRate)}</td>
+                      <td className="tnum px-5 py-3 text-right font-semibold text-accent-700">{row.lift.toFixed(2)}x</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <aside className="card card-pad border-accent-200 bg-accent-50/50">
+              <p className="eyebrow">Weighted by volume</p>
+              <p className="tnum mt-2 text-metric-lg font-semibold text-accent-700">
+                {formatPercent(perf.perCarrier.weightedPrecisionAt1)}
+              </p>
+              <dl className="tnum mt-4 space-y-1.5 border-t border-accent-200 pt-3 text-sm">
+                <div className="flex justify-between">
+                  <dt className="text-ink-600">Global (pooled)</dt>
+                  <dd className="font-semibold text-ink-900">{formatPercent(perf.perCarrier.globalPrecisionAt1)}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-ink-600">Mean per-carrier</dt>
+                  <dd className="font-semibold text-ink-900">{formatPercent(perf.perCarrier.meanPrecisionAt1)}</dd>
+                </div>
+              </dl>
+              <p className="mt-3 text-sm leading-relaxed text-ink-600">{perf.perCarrier.note}</p>
+            </aside>
+          </div>
+        </Section>
+
         <Section
           id="validation"
           eyebrow="External validation"
@@ -340,7 +475,7 @@ export default async function PerformancePage() {
             <div className="card card-pad">
               <p className="eyebrow">Records validated</p>
               <p className="tnum mt-2 text-metric-lg font-semibold text-ink-900">
-                {formatCount(validation.recordsValidated)}
+                {formatCount(validation.records)}
               </p>
               <p className="mt-2 text-sm text-ink-500">Against {validation.source}.</p>
             </div>

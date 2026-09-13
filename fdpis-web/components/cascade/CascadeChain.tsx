@@ -1,81 +1,249 @@
 "use client";
 
-import { ArrowRight, Info, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Info } from "lucide-react";
 import type { Cascade, CascadeNode } from "@/lib/types";
 import { Tooltip } from "@/components/Tooltip";
 import { SEVERITY_STYLES, formatClock } from "@/lib/format";
 
-const CONFIDENCE_NOTE =
-  "Beyond depth 2 the propagation model's correlation with observed delay falls to 0.33 and below. The cascade still continues, but we will not put a number on it.";
+/**
+ * Edge-centric cascade chain.
+ *
+ * The prior version put the story in the NODES (each downstream leg as a card
+ * of numbers). This version puts it on the EDGES - the turnaround between two
+ * legs - because the operationally interesting fact is not just "how late is
+ * this flight" but "where did the delay stop." An edge that absorbed the
+ * inbound delay and an edge that passed most of it through look identical if
+ * you only read node totals; they must not look identical here.
+ *
+ * A note on honesty: the visual spec for this component asks for an
+ * "absorption equation" of the form
+ *     62 min inbound  -  45 min slack  =  17 min passed on
+ * That equation is the ARITHMETIC BASELINE from notebook 3 (max(0, inbound -
+ * slack)) - a formula the deployed model was built to beat, and does beat
+ * (MAE 7.67 vs 8.47). The number this app actually reports as "passed on"
+ * (inheritedDelayMin) is the LEARNED model's prediction, which routinely
+ * differs from that raw subtraction - sometimes by a lot (checked against
+ * live API responses while building this: 45 min inbound with 19 min slack
+ * produced 42.33 min passed on, not 45-19=26). Printing "45 - 19 = 42.33"
+ * would be a false equation sitting in the UI in tabular numerals, which is
+ * exactly the kind of invented/inconsistent figure this project has spent
+ * several review passes eliminating elsewhere (see AUDIT_REPORT.md).
+ *
+ * So the edge shows the three real numbers - inbound, slack, passed-on - but
+ * connects the last one with an arrow ("->"), not an equals sign, and the
+ * tooltip says plainly that it is a model prediction, not a subtraction.
+ */
 
-/** Connector thickness carries the amount of delay handed forward. */
-function Connector({ node }: { node: CascadeNode }) {
-  const transmitted = node.inheritedDelayMin;
-  const thickness = Math.min(12, Math.max(2, 2 + transmitted / 7));
-  const color = node.quantitative
-    ? transmitted === 0
-      ? "#cdd2d6"
-      : SEVERITY_STYLES[node.severity].hex
-    : "#cdd2d6";
+type EdgeState = "absorbed" | "propagating" | "low-confidence";
+
+/** Mirrors config.DEPTH_CORRELATION on the backend and the Performance page. */
+const DEPTH_CORRELATION: Record<number, number> = {
+  1: 0.674,
+  2: 0.428,
+  3: 0.327,
+  4: 0.233,
+  5: 0.226,
+};
+
+const BOUNDARY_NOTE =
+  "Model correlation with observed delay, by depth: " +
+  Object.entries(DEPTH_CORRELATION)
+    .map(([d, c]) => `depth ${d} = ${c.toFixed(3)}`)
+    .join(", ") +
+  ". Beyond depth 2 it falls below 0.33, which is not enough to publish a " +
+  "number. Quantitative predictions stop here by design, not because the " +
+  "data ran out.";
+
+function confidenceNote(depth: number, correlation: number | null): string {
+  const c = correlation === null ? "below 0.33" : correlation.toFixed(3);
+  return (
+    `The propagation model's correlation with observed delay at depth ${depth} is ` +
+    `${c}. Past depth 2 it falls below 0.33, which is not enough to publish a ` +
+    `figure, so no delay estimate is reported for this leg. The cascade is still ` +
+    `expected to continue.`
+  );
+}
+
+function edgeStateFor(node: CascadeNode): EdgeState {
+  if (!node.quantitative) return "low-confidence";
+  if (node.absorbed) return "absorbed";
+  return "propagating";
+}
+
+function edgeTooltip(node: CascadeNode): string {
+  if (!node.quantitative) return confidenceNote(node.hop, node.correlationAtDepth);
+
+  const inbound = Math.round(node.inboundDelayMin);
+  const slackText =
+    node.slackMin != null
+      ? `${Math.round(node.slackMin)} min of scheduled ground time`
+      : "no recorded turnaround slack";
+
+  if (node.absorbed) {
+    return (
+      `${inbound} min of delay arrived at this turnaround, with ${slackText}. ` +
+      `The propagation model predicts none of it survives to the next departure.`
+    );
+  }
+
+  const passed = node.inheritedDelayMin != null ? Math.round(node.inheritedDelayMin) : null;
+  return (
+    `${inbound} min of delay arrived at this turnaround, with ${slackText}. ` +
+    `The propagation model predicts ${passed} min carries through to the next ` +
+    `departure - a learned estimate informed by slack, congestion and rotation ` +
+    `position, not a literal subtraction of the two figures shown.`
+  );
+}
+
+const NODE_W = 188;
+const EDGE_W = 164;
+
+/** The turnaround between two legs. This is where the story lives. */
+function Edge({
+  node,
+  animate,
+  delayMs,
+}: {
+  node: CascadeNode;
+  animate?: boolean;
+  delayMs?: number;
+}) {
+  const state = edgeStateFor(node);
+  const inherited = node.inheritedDelayMin;
+
+  const stroke =
+    state === "absorbed"
+      ? "#0f766e"
+      : state === "low-confidence"
+        ? "#9aa3aa"
+        : node.severity
+          ? SEVERITY_STYLES[node.severity].hex
+          : "#9aa3aa";
+
+  // Thickness carries transmitted minutes - but only where there is a real
+  // transmitted figure. Absorbed and low-confidence edges get a fixed, thin
+  // weight; nothing here is scaled from a number we don't have.
+  const strokeWidth =
+    state === "propagating"
+      ? Math.min(16, Math.max(2.5, 2.5 + (inherited ?? 0) / 6))
+      : state === "absorbed"
+        ? 2.5
+        : 2;
+
+  const dash =
+    state === "absorbed" ? "7 5" : state === "low-confidence" ? "1.5 4.5" : undefined;
+
+  const stateLabel =
+    state === "absorbed" ? "Absorbed" : state === "low-confidence" ? "Low confidence" : "Propagating";
+
+  const stateLabelColor =
+    state === "absorbed" ? "text-accent-700" : state === "low-confidence" ? "text-ink-400" : "text-ink-500";
+
+  const svgW = EDGE_W - 24;
 
   return (
     <div
-      className="flex w-12 shrink-0 flex-col items-center justify-center gap-1.5 self-center lg:w-14"
-      aria-hidden
+      className="flex shrink-0 flex-col items-center justify-center gap-2 self-stretch py-4"
+      style={{ width: EDGE_W }}
     >
-      <span className="tnum whitespace-nowrap text-[0.6875rem] font-semibold text-ink-500">
-        {node.quantitative
-          ? transmitted === 0
-            ? "absorbed"
-            : `+${transmitted} min`
-          : ""}
+      <span className={`text-[0.625rem] font-semibold uppercase tracking-[0.06em] ${stateLabelColor}`}>
+        {stateLabel}
       </span>
-      <span className="flex w-full items-center">
-        <span
-          className="flex-1 rounded-full"
-          style={{
-            height: thickness,
-            background: color,
-            opacity: node.quantitative ? 1 : 0.6,
-            backgroundImage: node.quantitative
-              ? undefined
-              : "repeating-linear-gradient(90deg,#cdd2d6 0 6px,transparent 6px 12px)",
-          }}
+
+      <svg
+        width={svgW}
+        height={12}
+        viewBox={`0 0 ${svgW} 12`}
+        aria-hidden
+        className={animate ? "animate-grow-x" : undefined}
+        style={
+          animate
+            ? { transformOrigin: "left center", animationDelay: `${delayMs ?? 0}ms` }
+            : undefined
+        }
+      >
+        <line
+          x1={1}
+          y1={6}
+          x2={svgW - 1}
+          y2={6}
+          stroke={stroke}
+          strokeWidth={strokeWidth}
+          strokeDasharray={dash}
+          strokeLinecap="round"
         />
-        <ArrowRight
-          className="h-4 w-4 shrink-0"
-          style={{ color }}
-          strokeWidth={2.5}
-        />
-      </span>
-      <span className="h-4" />
+      </svg>
+
+      <Tooltip content={edgeTooltip(node)} className="w-full justify-center">
+        <div className="flex w-full cursor-help flex-col items-center gap-0.5 px-1.5 text-center">
+          {state === "low-confidence" ? (
+            // Explicitly no numbers past the confidence boundary - see the
+            // module doc comment for why.
+            <span className="text-[0.6875rem] font-semibold italic text-ink-400">
+              cascade likely continues
+            </span>
+          ) : (
+            <>
+              <span className="tnum text-[0.6875rem] leading-snug text-ink-500">
+                {Math.round(node.inboundDelayMin)} min inbound{" "}
+                &minus; {node.slackMin != null ? Math.round(node.slackMin) : 0} min slack
+              </span>
+              <span
+                className={`tnum text-xs font-bold ${
+                  state === "absorbed" ? "text-accent-700" : SEVERITY_STYLES[node.severity ?? "clear"].text
+                }`}
+              >
+                {state === "absorbed"
+                  ? "→ absorbed"
+                  : `→ ${Math.round(inherited ?? 0)} min passed on`}
+              </span>
+            </>
+          )}
+        </div>
+      </Tooltip>
     </div>
   );
 }
 
-function OriginCard({ cascade }: { cascade: Cascade }) {
+function OriginNode({ cascade }: { cascade: Cascade }) {
   const f = cascade.originFlight;
+  const sourceLabel =
+    cascade.observedDelaySource === "historical_actual"
+      ? "Observed delay (historical)"
+      : "Observed delay (entered by you)";
+
   return (
-    <div className="w-[212px] shrink-0 rounded-xl border-2 border-ink-900 bg-ink-900 p-4 text-white lg:w-[228px]">
+    <div
+      className="shrink-0 rounded-xl border-2 border-ink-900 bg-ink-900 p-4 text-white"
+      style={{ width: NODE_W }}
+    >
       <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.12em] text-white/60">
         Disrupted leg
       </p>
-      <p className="tnum mt-2 text-lg font-bold tracking-tight">
-        {f.origin}
-        <span className="px-1.5 text-white/40">&rarr;</span>
-        {f.destination}
-      </p>
-      <p className="tnum mt-0.5 text-sm text-white/70">
-        {f.flightNumber} &middot; dep {formatClock(f.scheduledDeparture)} &middot; leg{" "}
-        {f.legIndex} of {f.legCount}
-      </p>
+      {f ? (
+        <>
+          <p className="tnum mt-2 text-lg font-bold tracking-tight">
+            {f.origin}
+            <span className="px-1.5 text-white/40">&rarr;</span>
+            {f.destination}
+          </p>
+          <p className="tnum mt-0.5 text-xs text-white/70">
+            {f.flightNumber} &middot; dep {formatClock(f.scheduledDeparture)} &middot; leg{" "}
+            {f.legIndex} of {f.legCount}
+          </p>
+        </>
+      ) : (
+        <p className="tnum mt-2 text-lg font-bold tracking-tight">
+          {cascade.tail} &middot; leg {cascade.originLeg}
+        </p>
+      )}
 
       <div className="mt-4 border-t border-white/15 pt-3">
         <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.12em] text-white/60">
-          Observed delay
+          {sourceLabel}
         </p>
         <p className="tnum mt-1 text-3xl font-semibold tracking-tight">
-          {cascade.observedDelayMin}
+          {Math.round(cascade.observedDelayMin)}
           <span className="ml-1 text-base font-medium text-white/60">min</span>
         </p>
       </div>
@@ -83,15 +251,18 @@ function OriginCard({ cascade }: { cascade: Cascade }) {
   );
 }
 
-function QuantitativeCard({ node }: { node: CascadeNode }) {
-  const style = SEVERITY_STYLES[node.severity];
+/** Simplified per the edge-centric spec: route, time, outcome. No breakdown -
+ * the edge leading into this node already explained how the number got here. */
+function QuantitativeNode({ node }: { node: CascadeNode }) {
+  const style = SEVERITY_STYLES[node.severity ?? "clear"];
   const f = node.flight;
 
   return (
     <div
-      className={`w-[212px] shrink-0 rounded-xl border bg-white p-4 shadow-card lg:w-[228px] ${style.border}`}
+      className={`shrink-0 rounded-xl border bg-white p-4 shadow-card ${style.border}`}
+      style={{ width: NODE_W }}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <span className="eyebrow">Hop {node.hop}</span>
         <span
           className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold ${style.chip}`}
@@ -101,64 +272,42 @@ function QuantitativeCard({ node }: { node: CascadeNode }) {
         </span>
       </div>
 
-      <p className="tnum mt-2.5 text-lg font-bold tracking-tight text-ink-900">
+      <p className="tnum mt-2.5 text-base font-bold tracking-tight text-ink-900">
         {f.origin}
         <span className="px-1.5 text-ink-300">&rarr;</span>
         {f.destination}
       </p>
-      <p className="tnum mt-0.5 text-sm text-ink-500">
+      <p className="tnum mt-0.5 text-xs text-ink-500">
         {f.flightNumber} &middot; sched dep {formatClock(f.scheduledDeparture)}
       </p>
 
-      <dl className="tnum mt-4 space-y-1.5 border-t border-ink-200 pt-3 text-sm">
-        <div className="flex items-baseline justify-between">
-          <dt className="text-ink-500">Inherited</dt>
-          <dd className="font-medium text-ink-800">{node.inheritedDelayMin} min</dd>
-        </div>
-        <div className="flex items-baseline justify-between">
-          <dt className="text-ink-500">Fresh</dt>
-          <dd className="font-medium text-ink-800">+{node.freshDelayMin} min</dd>
-        </div>
-      </dl>
-
       <div className="mt-3 border-t border-ink-200 pt-3">
         <p className="eyebrow">Predicted departure delay</p>
-        <p className={`tnum mt-1 text-3xl font-semibold tracking-tight ${style.text}`}>
-          {node.totalDelayMin}
-          <span className="ml-1 text-base font-medium text-ink-400">min</span>
+        <p className={`tnum mt-1 text-2xl font-semibold tracking-tight ${style.text}`}>
+          {node.totalDelayMin != null ? Math.round(node.totalDelayMin) : "--"}
+          <span className="ml-1 text-sm font-medium text-ink-400">min</span>
         </p>
-        <p className="tnum mt-1 text-sm text-ink-500">
-          Interval {node.intervalLowMin}&ndash;{node.intervalHighMin} min
+        <p className="tnum mt-1 text-xs text-ink-500">
+          Interval{" "}
+          {node.intervalLowMin != null ? Math.round(node.intervalLowMin) : "--"}
+          &ndash;
+          {node.intervalHighMin != null ? Math.round(node.intervalHighMin) : "--"} min
         </p>
-      </div>
-
-      <div className="mt-3 flex items-center justify-between border-t border-ink-200 pt-3">
-        <span className="tnum text-xs text-ink-500">
-          Slack {node.slackMin} min
-        </span>
-        {node.absorbed ? (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#0a7c0a]">
-            <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
-            Absorbed
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-risk-critical">
-            <TriangleAlert className="h-3.5 w-3.5" aria-hidden />
-            Not absorbed
-          </span>
-        )}
       </div>
     </div>
   );
 }
 
-function BeyondHorizonCard({ node }: { node: CascadeNode }) {
+function LowConfidenceNode({ node }: { node: CascadeNode }) {
   const f = node.flight;
   return (
-    <div className="w-[212px] shrink-0 rounded-xl border border-dashed border-ink-300 bg-ink-50/70 p-4 lg:w-[228px]">
-      <div className="flex items-center justify-between">
+    <div
+      className="shrink-0 rounded-xl border border-dashed border-ink-300 bg-ink-50/70 p-4"
+      style={{ width: NODE_W }}
+    >
+      <div className="flex items-center justify-between gap-2">
         <span className="eyebrow">Hop {node.hop}</span>
-        <Tooltip content={CONFIDENCE_NOTE}>
+        <Tooltip content={confidenceNote(node.hop, node.correlationAtDepth)}>
           <span className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-[0.6875rem] font-semibold text-ink-500 ring-1 ring-inset ring-ink-200">
             <Info className="h-3 w-3" aria-hidden />
             Beyond depth 2
@@ -166,43 +315,47 @@ function BeyondHorizonCard({ node }: { node: CascadeNode }) {
         </Tooltip>
       </div>
 
-      <p className="tnum mt-2.5 text-lg font-bold tracking-tight text-ink-600">
+      <p className="tnum mt-2.5 text-base font-bold tracking-tight text-ink-600">
         {f.origin}
         <span className="px-1.5 text-ink-300">&rarr;</span>
         {f.destination}
       </p>
-      <p className="tnum mt-0.5 text-sm text-ink-400">
+      <p className="tnum mt-0.5 text-xs text-ink-400">
         {f.flightNumber} &middot; sched dep {formatClock(f.scheduledDeparture)}
       </p>
 
-      <div className="mt-4 border-t border-dashed border-ink-300 pt-3">
-        <p className="text-[0.9375rem] font-semibold leading-snug text-ink-700">
+      <div className="mt-3 border-t border-dashed border-ink-300 pt-3">
+        <p className="text-sm font-semibold leading-snug text-ink-700">
           Cascade likely continues
         </p>
-        <p className="mt-1.5 text-sm leading-relaxed text-ink-500">
+        <p className="mt-1 text-xs leading-relaxed text-ink-500">
           No delay estimate published at this depth.
         </p>
-      </div>
-
-      <div className="mt-3 border-t border-dashed border-ink-300 pt-3">
-        <span className="tnum text-xs text-ink-400">Slack {node.slackMin} min</span>
       </div>
     </div>
   );
 }
 
+/**
+ * The single most defensible line in the whole system, drawn so it cannot be
+ * scrolled past unnoticed: a full-height, tinted, dashed-edged column with the
+ * claim spelled out in words, plus the exact per-depth correlation figures on
+ * hover/focus.
+ */
 function ConfidenceBoundary() {
   return (
-    <div className="relative flex w-10 shrink-0 items-stretch justify-center self-stretch lg:w-12">
-      <span
+    <div className="relative flex w-20 shrink-0 items-stretch self-stretch" aria-hidden={false}>
+      <div
+        className="absolute inset-0 border-x border-dashed border-[#e8c674] bg-[#fdf4e0]/70"
         aria-hidden
-        className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 border-l-2 border-dashed border-ink-400"
       />
-      <Tooltip content={CONFIDENCE_NOTE} className="items-center">
-        <span className="relative z-10 my-auto inline-flex -rotate-90 items-center gap-1.5 whitespace-nowrap rounded-full border border-ink-300 bg-white px-2.5 py-1 text-[0.6875rem] font-semibold uppercase tracking-[0.1em] text-ink-600">
-          <Info className="h-3 w-3 rotate-90" aria-hidden />
-          Confidence boundary
-        </span>
+      <Tooltip content={BOUNDARY_NOTE} className="relative z-10 w-full items-stretch" side="top">
+        <div className="flex h-full w-full cursor-help flex-col items-center justify-center gap-1.5 px-1.5 py-4 text-center">
+          <Info className="h-3.5 w-3.5 shrink-0 text-[#8a5d00]" aria-hidden />
+          <p className="text-[0.625rem] font-bold uppercase leading-tight tracking-[0.04em] text-[#8a5d00]">
+            Quantitative predictions end here
+          </p>
+        </div>
       </Tooltip>
     </div>
   );
@@ -213,7 +366,7 @@ export function CascadeChain({
   animateFrom,
 }: {
   cascade: Cascade;
-  /** When set, nodes fade in one after another from this key. Used on /live. */
+  /** When set, edges and nodes fill in sequentially from this key. Used on /live. */
   animateFrom?: string;
 }) {
   if (cascade.nodes.length === 0) {
@@ -221,8 +374,8 @@ export function CascadeChain({
       <div className="card card-pad text-sm text-ink-600">
         <p className="font-semibold text-ink-800">Nothing downstream.</p>
         <p className="mt-1">
-          This is the final leg of {cascade.originFlight.tail}&apos;s day. The delay ends
-          here rather than propagating into another departure.
+          This is the final leg of {cascade.tail}&apos;s day. The delay ends here
+          rather than propagating into another departure.
         </p>
       </div>
     );
@@ -231,26 +384,32 @@ export function CascadeChain({
   return (
     <div className="overflow-x-auto scrollbar-slim pb-3">
       <div className="flex min-w-max items-stretch py-1">
-        <OriginCard cascade={cascade} />
+        <OriginNode cascade={cascade} />
 
         {cascade.nodes.map((node, i) => {
           const previous = cascade.nodes[i - 1];
           const crossesBoundary =
             node.quantitative === false && (i === 0 || previous.quantitative);
 
+          // Edges draw in slightly ahead of the node they feed, so the chain
+          // reads as "the turn resolves, then the flight lands" - 150ms per
+          // hop total, matching the spec (quick, not a slow reveal).
+          const edgeDelay = animateFrom ? i * 150 : undefined;
+          const nodeDelay = animateFrom ? i * 150 + 70 : undefined;
+
           return (
             <div key={node.flight.id} className="flex items-stretch">
-              <Connector node={node} />
+              <Edge node={node} animate={Boolean(animateFrom)} delayMs={edgeDelay} />
               {crossesBoundary ? <ConfidenceBoundary /> : null}
               <div
                 key={animateFrom ? `${animateFrom}-${node.flight.id}` : node.flight.id}
                 className={animateFrom ? "animate-fade-up" : undefined}
-                style={animateFrom ? { animationDelay: `${i * 140}ms` } : undefined}
+                style={animateFrom ? { animationDelay: `${nodeDelay}ms` } : undefined}
               >
                 {node.quantitative ? (
-                  <QuantitativeCard node={node} />
+                  <QuantitativeNode node={node} />
                 ) : (
-                  <BeyondHorizonCard node={node} />
+                  <LowConfidenceNode node={node} />
                 )}
               </div>
             </div>

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Activity, BarChart3, ClipboardList, GitBranch } from "lucide-react";
 import { Logo } from "@/components/Logo";
-import { USING_MOCK_DATA } from "@/lib/api";
+import { ScopeBar } from "@/components/ScopeBar";
 
 const LINKS = [
   { href: "/briefing", label: "Briefing", icon: ClipboardList },
@@ -44,15 +44,7 @@ export function Nav() {
           })}
         </nav>
 
-        {USING_MOCK_DATA ? (
-          <span
-            title="All figures on screen are generated fixtures, not a live operational feed."
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-ink-200 bg-ink-50 px-2.5 py-1 text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-ink-500"
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-ink-400" aria-hidden />
-            Demo data
-          </span>
-        ) : null}
+        <ScopeBar />
       </div>
     </header>
   );

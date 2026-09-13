@@ -12,9 +12,13 @@ const WEEKDAYS = [
   "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 ];
 
-/** "2026-09-09T07:45:00" -> "07:45" */
-export function formatClock(iso: string): string {
-  return iso.slice(11, 16);
+/**
+ * The API returns clock times as "HH:MM" already. Kept as a function so call
+ * sites do not care, and so a null (cancelled leg) renders as a dash.
+ */
+export function formatClock(time: string | null | undefined): string {
+  if (!time) return "--:--";
+  return time.length > 5 ? time.slice(11, 16) : time;
 }
 
 /** "2026-09-09" -> "Wednesday 9 September 2026" */
@@ -51,6 +55,13 @@ export function formatDecimal(value: number, digits = 3): string {
 /* ------------------------------------------------------------------ */
 /* Severity presentation                                              */
 /* ------------------------------------------------------------------ */
+
+/** Map the API's per-day percentile band onto the display severity scale. */
+export function bandSeverity(band: "low" | "medium" | "high"): Severity {
+  if (band === "high") return "critical";
+  if (band === "medium") return "elevated";
+  return "clear";
+}
 
 export function riskSeverity(riskScore: number): Severity {
   if (riskScore >= 70) return "critical";

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useScope } from "@/components/DataScope";
 import { Play, RotateCcw, Zap } from "lucide-react";
 import type {
   Cascade,
@@ -12,6 +13,7 @@ import type {
 import { CascadeChain } from "@/components/cascade/CascadeChain";
 import { RecommendationPanel } from "@/components/cascade/RecommendationPanel";
 import { RotationTimeline } from "@/components/live/RotationTimeline";
+import { ErrorState } from "@/components/States";
 import { formatDuration } from "@/lib/format";
 import {
   getPresetScenarios,
@@ -25,6 +27,7 @@ const REVEAL_STEP_MS = 150;
 
 export function LiveConsole() {
   const searchParams = useSearchParams();
+  const { date } = useScope();
 
   const [fleet, setFleet] = useState<RotationSummary[]>([]);
   const [presets, setPresets] = useState<PresetScenario[]>([]);
@@ -37,14 +40,20 @@ export function LiveConsole() {
   const [revealed, setRevealed] = useState(0);
   const [runToken, setRunToken] = useState(0);
   const [activePreset, setActivePreset] = useState<string | null>(null);
+  const [runError, setRunError] = useState<unknown>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   const legFromUrl = useRef<number | null>(null);
   const autoRunDelay = useRef<number | null>(null);
 
   /* Fleet list and presets, once. */
   useEffect(() => {
+    // The scope resolves the default date asynchronously; do not fire until it has.
+    if (!date) return;
     let live = true;
-    Promise.all([listRotations(), getPresetScenarios()]).then(([f, p]) => {
+    setLoadError(null);
+    Promise.all([listRotations(date), getPresetScenarios(date)])
+      .then(([f, p]) => {
       if (!live) return;
       setFleet(f);
       setPresets(p);
@@ -67,19 +76,20 @@ export function LiveConsole() {
         }
         setTail(preferred.tail);
       }
-    });
+      })
+      .catch((e) => { if (live) setLoadError(e); });
     return () => {
       live = false;
     };
     // searchParams is read once, on mount, deliberately.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [date]);
 
   /* Load the selected aircraft's day. */
   useEffect(() => {
-    if (!tail) return;
+    if (!tail || !date) return;
     let live = true;
-    getRotation(tail).then((r) => {
+    getRotation(tail, date).then((r) => {
       if (!live || !r) return;
       setRotation(r);
       setLegIndex((current) => {
@@ -116,15 +126,22 @@ export function LiveConsole() {
 
   const run = useCallback(
     async (nextTail: string, nextLeg: number, nextDelay: number) => {
-      const result = await simulateCascade({
+      setRunError(null);
+      try {
+        const result = await simulateCascade({
         tail: nextTail,
+        date,
         legIndex: nextLeg,
         observedDelayMin: nextDelay,
-      });
-      setCascade(result);
-      setRunToken((t) => t + 1);
+        });
+        setCascade(result);
+        setRunToken((t) => t + 1);
+      } catch (e) {
+        setRunError(e);
+        setCascade(null);
+      }
     },
-    [],
+    [date],
   );
 
   function reset() {
@@ -150,6 +167,18 @@ export function LiveConsole() {
   const visibleRecommendations = (cascade?.recommendations ?? []).filter(
     (r) => r.triggeredAtHop <= revealed,
   );
+
+  if (loadError) {
+    return (
+      <div className="mx-auto max-w-[1600px] px-5 py-7 lg:px-8">
+        <ErrorState
+          error={loadError}
+          context="Could not load rotations for this date"
+          onRetry={() => window.location.reload()}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-[1600px] px-5 py-7 lg:px-8">
@@ -204,7 +233,7 @@ export function LiveConsole() {
                 >
                   {fleet.map((r) => (
                     <option key={r.tail} value={r.tail}>
-                      {r.tail} &middot; {r.carrier} {r.aircraftType} &middot; {r.legCount}{" "}
+                      {r.tail} &middot; {r.carrier} &middot; {r.legCount}{" "}
                       legs &middot; {r.routeLabel}
                     </option>
                   ))}
@@ -213,7 +242,7 @@ export function LiveConsole() {
 
               {rotation ? (
                 <p className="tnum text-sm text-ink-500">
-                  {rotation.carrierName} &middot; {rotation.aircraftType} &middot;{" "}
+                  {rotation.carrier} &middot;{" "}
                   {rotation.legs.length} legs today
                 </p>
               ) : null}
@@ -253,7 +282,7 @@ export function LiveConsole() {
                       {selectedLeg.flightNumber} &middot; {selectedLeg.origin}
                       <span className="px-1 text-ink-300">&rarr;</span>
                       {selectedLeg.destination} &middot; leg {selectedLeg.legIndex} of{" "}
-                      {selectedLeg.legCount}
+                      {rotation?.legCount ?? "?"}
                     </span>
                   ) : (
                     "Select a leg on the timeline above."
@@ -311,6 +340,14 @@ export function LiveConsole() {
             </div>
           </section>
 
+          {runError ? (
+            <ErrorState
+              error={runError}
+              context="Could not compute the cascade"
+              onRetry={() => { if (tail && legIndex != null) void run(tail, legIndex, delayMin); }}
+            />
+          ) : null}
+
           {/* Result */}
           <section className="card overflow-hidden">
             <div className="flex flex-col gap-1 border-b border-ink-200 px-5 py-4 lg:flex-row lg:items-center lg:justify-between lg:px-6">
@@ -319,7 +356,7 @@ export function LiveConsole() {
               </h2>
               {cascade ? (
                 <p className="tnum text-sm text-ink-500">
-                  {formatDuration(cascade.totalDownstreamDelayMin)} of downstream delay
+                  {formatDuration(cascade.summary.totalDelayMinutesAdded)} of downstream delay
                   across depth 1&ndash;2 &middot; {cascade.nodes.length} legs in the chain
                 </p>
               ) : null}

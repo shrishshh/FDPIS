@@ -25,6 +25,18 @@ PERFORMANCE = {
             {"group": "F_rotation",    "n_feat": 40, "auc": 0.6777, "auc_gain": 0.0367,  "pr_auc": 0.3239, "f1": 0.348, "p1": 0.779, "p5": 0.456, "p10": 0.371},
         ],
     },
+    # Seven-way model comparison from notebook 2, 32-feature production run.
+    # Added so the frontend has a single source of truth rather than a hardcoded
+    # copy of this table.
+    "models": [
+        {"model": "Blend (soft vote)",    "auc": 0.6924, "pr_auc": 0.3339, "precision": 0.260, "recall": 0.585, "f1": 0.360, "p1": 0.781, "p5": 0.458, "p10": 0.380, "is_best": True},
+        {"model": "RandomForest",         "auc": 0.6894, "pr_auc": 0.3305, "precision": 0.267, "recall": 0.542, "f1": 0.358, "p1": 0.775, "p5": 0.456, "p10": 0.374},
+        {"model": "HistGradientBoosting", "auc": 0.6880, "pr_auc": 0.3276, "precision": 0.254, "recall": 0.591, "f1": 0.356, "p1": 0.775, "p5": 0.452, "p10": 0.372},
+        {"model": "XGBoost",              "auc": 0.6879, "pr_auc": 0.3295, "precision": 0.260, "recall": 0.570, "f1": 0.357, "p1": 0.772, "p5": 0.455, "p10": 0.374},
+        {"model": "LightGBM",             "auc": 0.6855, "pr_auc": 0.3248, "precision": 0.254, "recall": 0.585, "f1": 0.355, "p1": 0.768, "p5": 0.443, "p10": 0.372},
+        {"model": "LogisticRegression",   "auc": 0.6551, "pr_auc": 0.2543, "precision": 0.237, "recall": 0.551, "f1": 0.331, "p1": 0.382, "p5": 0.342, "p10": 0.312},
+        {"model": "Majority baseline",    "auc": 0.5000, "pr_auc": 0.1561, "precision": 0.156, "recall": 1.000, "f1": 0.270, "p1": 0.156, "p5": 0.156, "p10": 0.156, "is_baseline": True},
+    ],
     "ranking": [
         {"depth_pct": 0.5,  "flights": 1115,  "precision": 0.885, "lift": 5.67},
         {"depth_pct": 1.0,  "flights": 2231,  "precision": 0.781, "lift": 5.00},

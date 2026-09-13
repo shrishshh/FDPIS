@@ -1,113 +1,113 @@
 /**
- * FDPIS — shared domain types.
+ * FDPIS domain types.
  *
- * Every function in /lib/api returns one of these shapes. When the FastAPI
- * backend is connected, these types become the response contract; nothing in
- * /components or /app should need to change.
+ * These mirror the FastAPI backend's responses, converted to camelCase inside
+ * /lib/api. Where the backend does not provide something the mock used to
+ * invent (aircraft type, carrier long name, calibrated delay probability), the
+ * field is absent rather than faked.
  */
 
 /* ------------------------------------------------------------------ */
-/* Reference data                                                     */
+/* Reference                                                          */
 /* ------------------------------------------------------------------ */
 
-export interface Airport {
-  /** IATA code, e.g. "ORD" */
+export interface CarrierOption {
   code: string;
-  city: string;
-  name: string;
-  /** Rough scale of operation — used for congestion weighting in the mock. */
-  hubTier: 1 | 2 | 3;
+  flights: number;
 }
 
-export interface Carrier {
-  /** IATA carrier code, e.g. "AA" */
-  code: string;
-  name: string;
-  /** Primary hubs, used to seed plausible rotations. */
-  hubs: string[];
+export interface DateOption {
+  date: string; // YYYY-MM-DD
+  flights: number;
+}
+
+export interface FilterOptions {
+  carriers: CarrierOption[];
+  dates: DateOption[];
 }
 
 /* ------------------------------------------------------------------ */
 /* Flights                                                            */
 /* ------------------------------------------------------------------ */
 
+/** Risk band is a percentile within the requested day, assigned by the API. */
+export type RiskBand = "low" | "medium" | "high";
+
 export interface Flight {
-  /** Stable id, e.g. "AA1482-N481AA-3" */
+  /** e.g. "AA1543-N981UY-3" */
   id: string;
   flightNumber: string;
   carrier: string;
-  carrierName: string;
   origin: string;
   destination: string;
-  /** ISO 8601 local operating time. */
-  scheduledDeparture: string;
-  scheduledArrival: string;
-  /** Block time in minutes. */
-  blockMinutes: number;
-  tail: string;
-  aircraftType: string;
-  /** 1-based position of this leg in the aircraft's day. */
-  legIndex: number;
-  /** Total legs the aircraft operates that day. */
-  legCount: number;
-  /**
-   * Ground time beyond the minimum turn — the buffer available to absorb an
-   * inbound delay before it propagates. Minutes.
-   */
-  turnaroundSlackMin: number;
-  /** Primary risk model output, 0–100. */
+  /** "HH:MM" local. The API serves clock times, not ISO timestamps. */
+  scheduledDeparture: string | null;
+  scheduledArrival: string | null;
+  tail: string | null;
+  legIndex: number | null;
+  legCount: number | null;
+  /** Ground time beyond the minimum turn, in minutes. */
+  turnaroundSlackMin: number | null;
+  /** Model probability * 100, rounded. */
   riskScore: number;
-  /** Calibrated probability of a >15 min departure delay, 0–1. */
-  delayProbability: number;
+  riskBand: RiskBand;
+  /** HISTORICAL GROUND TRUTH, not a prediction. The API serves past flights. */
+  actualDelayMinutes: number | null;
+  actuallyDelayed15: boolean | null;
 }
 
 export type Severity = "clear" | "watch" | "elevated" | "critical";
 
 export interface RiskFilters {
   carrier?: string;
+  /** Applied client-side: the backend briefing endpoint filters by carrier only. */
   origin?: string;
-  /** Only return flights with riskScore >= this value. */
+  /** Applied client-side, as above. */
   minRisk?: number;
 }
 
 export interface BriefingSummary {
-  /** ISO date, e.g. "2026-09-09" */
   date: string;
+  carrier: string | null;
   flightsScheduled: number;
   highRiskCount: number;
-  predictedCascades: number;
   aircraftAffected: number;
-  /** Number of flights in the review queue (top-N by risk). */
+  meanAvailableSlack: number | null;
   reviewQueueSize: number;
-}
-
-export interface FilterOptions {
-  carriers: Carrier[];
-  origins: string[];
 }
 
 /* ------------------------------------------------------------------ */
 /* Rotations                                                          */
 /* ------------------------------------------------------------------ */
 
+export interface RotationLeg {
+  legIndex: number;
+  flightNumber: string;
+  origin: string;
+  destination: string;
+  scheduledDeparture: string | null;
+  scheduledArrival: string | null;
+  turnaroundSlackMin: number | null;
+  /** False where the previous destination is not this origin. */
+  continuousRotation: boolean;
+  actualDepDelay: number | null;
+  actualArrDelay: number | null;
+}
+
 export interface Rotation {
   tail: string;
+  date: string;
   carrier: string;
-  carrierName: string;
-  aircraftType: string;
-  /** Ordered legs; legs[i].destination === legs[i+1].origin, always. */
-  legs: Flight[];
+  legCount: number;
+  legs: RotationLeg[];
 }
 
 export interface RotationSummary {
   tail: string;
   carrier: string;
-  carrierName: string;
-  aircraftType: string;
   legCount: number;
   firstOrigin: string;
   lastDestination: string;
-  /** e.g. "ORD → DFW → PHX → LAX" */
   routeLabel: string;
 }
 
@@ -115,121 +115,194 @@ export interface RotationSummary {
 /* Cascade                                                            */
 /* ------------------------------------------------------------------ */
 
+/** The leg a hop lands on. Enough to render it; not a full Flight. */
+export interface CascadeLeg {
+  id: string;
+  flightNumber: string;
+  origin: string;
+  destination: string;
+  scheduledDeparture: string | null;
+  legIndex: number;
+  legCount: number;
+}
+
 export interface CascadeNode {
-  /** 1-based hop count downstream of the disrupted leg. */
+  /** 1-based hops downstream of the disrupted leg. */
   hop: number;
-  flight: Flight;
-  /** Delay handed over from the inbound aircraft, before absorption. */
+  flight: CascadeLeg;
   inboundDelayMin: number;
-  /** Slack available on this turn. */
-  slackMin: number;
-  /** Delay that survived the turn: max(0, inbound − slack). */
-  inheritedDelayMin: number;
-  /** New delay generated on this leg (congestion, crew, ATC). */
-  freshDelayMin: number;
-  /** inherited + fresh. */
-  totalDelayMin: number;
-  intervalLowMin: number;
-  intervalHighMin: number;
-  /** True when the turn's slack fully absorbed the inbound delay. */
-  absorbed: boolean;
-  severity: Severity;
+  slackMin: number | null;
   /**
-   * False beyond the model's validated depth. When false, the UI must show a
-   * qualitative statement instead of a number — see MODEL_CONFIDENCE_DEPTH.
+   * NULL beyond the confidence depth. The backend does not publish a figure
+   * past depth 2 and the UI must render the absence, never a substitute.
    */
+  inheritedDelayMin: number | null;
+  freshDelayMin: number | null;
+  totalDelayMin: number | null;
+  intervalLowMin: number | null;
+  intervalHighMin: number | null;
+  gateProbability: number;
+  absorbed: boolean;
+  confidence: "high" | "low";
+  /** Model correlation with observed delay at this depth. */
+  correlationAtDepth: number | null;
+  /** Convenience: confidence === "high". */
   quantitative: boolean;
+  /** Derived from totalDelayMin; undefined when there is no number. */
+  severity: Severity | null;
+}
+
+export interface CascadeChainSummary {
+  legsAffected: number;
+  deepestHop: number;
+  quantifiedHops: number;
+  lowConfidenceHops: number;
+  totalDelayMinutesAdded: number;
+  confidenceDepth: number;
 }
 
 export type RecommendationCategory =
-  | "crew"
-  | "catering"
-  | "aircraft"
-  | "slot"
-  | "passenger";
+  | "crew" | "catering" | "aircraft" | "slot" | "passenger";
 
 export interface Recommendation {
   id: string;
   category: RecommendationCategory;
   title: string;
-  /** One line of business justification. */
   reason: string;
-  /** ISO time by which the action must be taken. */
+  /** "HH:MM" */
   deadline: string;
   priority: "high" | "medium" | "low";
-  /** Which hop crossed the threshold that triggered this action. */
   triggeredAtHop: number;
-  /** The flight the action applies to. */
   flightNumber: string;
   station: string;
 }
 
 export interface Cascade {
-  /** The disrupted flight and what happened to it. */
-  originFlight: Flight;
+  tail: string;
+  date: string;
+  originLeg: number;
+  originFlight: CascadeLeg | null;
   observedDelayMin: number;
-  /** Downstream legs in operating order. */
+  /** Whether the seed delay came from the user or from historical record. */
+  observedDelaySource: "user_input" | "historical_actual";
   nodes: CascadeNode[];
-  /** Sum of totalDelayMin across quantitative hops. */
-  totalDownstreamDelayMin: number;
-  /** Legs touched by the cascade. */
-  legsAffected: number;
-  /** Hops beyond which predictions are qualitative only. */
+  summary: CascadeChainSummary;
   confidenceDepth: number;
+  /**
+   * Derived in the frontend from the returned hop totals. The backend does not
+   * emit recommendations; these are threshold rules over its predictions.
+   */
   recommendations: Recommendation[];
 }
 
 export interface CascadeRequest {
   tail: string;
-  /** legIndex of the leg where the delay was observed. */
+  date: string;
   legIndex: number;
   observedDelayMin: number;
 }
 
+export interface PresetScenario {
+  id: string;
+  label: string;
+  description: string;
+  tail: string;
+  date: string;
+  legIndex: number;
+  delayMinutes: number;
+}
+
 /* ------------------------------------------------------------------ */
-/* Model performance                                                  */
+/* Model performance (GET /api/performance)                           */
 /* ------------------------------------------------------------------ */
 
+export interface ClassifierMetrics {
+  auc: number;
+  f1: number;
+  precisionAt1: number;
+  precisionAt5: number;
+  precisionAt10: number;
+  features: number;
+  trainingRows: number;
+  testRows: number;
+  baseDelayRate: number;
+  liftAt1: number;
+  source: string;
+}
+
 export interface AblationRow {
-  /** "A", "B", … */
   group: string;
-  label: string;
   featureCount: number;
   auc: number;
+  aucGain: number | null;
+  prAuc: number;
+  f1: number;
   precisionAt1: number;
+  precisionAt5: number;
+  precisionAt10: number;
 }
 
 export interface ModelRow {
   model: string;
   auc: number;
+  prAuc: number;
+  precision: number;
+  recall: number;
   f1: number;
   precisionAt1: number;
-  isBaseline?: boolean;
+  precisionAt5: number;
+  precisionAt10: number;
   isBest?: boolean;
+  isBaseline?: boolean;
 }
 
 export interface RankingRow {
-  /** "Top 1%" */
-  depthLabel: string;
-  /** 0.01 for "Top 1%" — used as the x value. */
-  depthFraction: number;
+  depthPct: number;
   flightsReviewed: number;
   precision: number;
   lift: number;
+}
+
+export interface PropagationMetrics {
+  gateAuc: number;
+  gatePrecision: number;
+  gateRecall: number;
+  maeAllCandidates: number;
+  maeActualCascades: number;
+  intervalCoverage: number;
+  gateThreshold: number;
+  thresholdSelectedOn: string;
 }
 
 export interface PropagationDepthRow {
   depth: number;
   maeMinutes: number;
   correlation: number;
+  quantitative: boolean;
 }
 
 export interface CascadeValidation {
   precision: number;
   recall: number;
   f1: number;
-  recordsValidated: number;
+  records: number;
   source: string;
+}
+
+export interface PerCarrierRow {
+  carrier: string;
+  testFlights: number;
+  precision: number;
+  baseRate: number;
+  lift: number;
+}
+
+export interface PerCarrier {
+  weightedPrecisionAt1: number;
+  meanPrecisionAt1: number;
+  globalPrecisionAt1: number;
+  note: string;
+  rows: PerCarrierRow[];
 }
 
 export interface HeadlineMetric {
@@ -240,27 +313,35 @@ export interface HeadlineMetric {
 }
 
 export interface ModelPerformance {
+  modelVersion: string;
+  classifier: ClassifierMetrics;
   ablation: AblationRow[];
-  ablationCallout: string;
+  ablationNote: string;
   models: ModelRow[];
   ranking: RankingRow[];
-  baseDelayRate: number;
+  propagation: PropagationMetrics;
   propagationByDepth: PropagationDepthRow[];
   confidenceDepth: number;
   cascadeValidation: CascadeValidation;
+  perCarrier: PerCarrier;
   limitations: string[];
+  /** Derived from `classifier` for the landing page hero. */
   headline: HeadlineMetric[];
 }
 
 /* ------------------------------------------------------------------ */
-/* Live entry                                                         */
+/* API health                                                         */
 /* ------------------------------------------------------------------ */
 
-export interface PresetScenario {
-  id: string;
-  label: string;
-  description: string;
-  tail: string;
-  legIndex: number;
-  delayMinutes: number;
+export interface ApiHealth {
+  status: string;
+  parquetRows: number;
+  dateMin: string;
+  dateMax: string;
+  dateCount: number;
+  layer3FeatureCount: number;
+  layer4FeatureCount: number;
+  gateThreshold: number;
+  confidenceDepth: number;
+  usingHistoricalData: boolean;
 }

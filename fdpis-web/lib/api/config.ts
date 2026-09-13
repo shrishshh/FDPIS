@@ -1,30 +1,19 @@
 /**
  * API configuration.
  *
- * Today every function in this directory reads from /lib/mock. When the
- * FastAPI service is connected, set NEXT_PUBLIC_API_BASE_URL and replace the
- * function bodies in this directory with fetch() calls — see README.md.
+ * The app is connected to the FastAPI backend. Data is real model output over a
+ * fixed historical dataset - not a live operational feed, and not fixtures.
  */
+export { API_BASE_URL, ApiError } from "@/lib/api/client";
 
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-
-/** True while the app is serving generated fixtures. Drives the nav badge. */
-export const USING_MOCK_DATA = true;
-
-/** The single operating day the demo fixtures describe. */
-export const DEMO_DATE = "2026-09-09";
+/** Kept false so the nav renders the live-connection indicator, not a mock badge. */
+export const USING_MOCK_DATA = false;
 
 /** Number of flights the morning briefing puts in the review queue. */
 export const REVIEW_QUEUE_SIZE = 20;
 
-/** Risk score at or above which a flight counts as high risk. */
+/** Risk score at or above which the UI calls a flight high risk. */
 export const HIGH_RISK_THRESHOLD = 60;
 
-/**
- * Small artificial latency so loading states are exercised in the demo.
- * Delete this when real network calls take its place.
- */
-export function simulateLatency(ms = 120): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+/** How many flights to pull for the briefing table. */
+export const BRIEFING_PAGE_SIZE = 300;
