@@ -1731,3 +1731,1013 @@ audit's verdict that they have zero references anywhere in the pipeline; noteboo
 successful rerun with identical row counts is the practical confirmation. `t1.txt` shows
 as `D` in `git status` and can be restored if ever wanted — it was a stray heredoc test
 artifact, so no reason to.
+
+---
+
+# FIXES 1-3 APPLIED
+
+Applied and rerun 2026-09-13. Notebooks 2, 3, 4, 5 all executed linearly from a fresh
+kernel with **zero errors and sequential execution counts**. Notebook 1 was not rerun —
+no change affects it. Backups of all five notebooks at
+`<scratchpad>/backup_fixes123/`.
+
+| Notebook | Runtime | Result | Code cells | Sequential |
+|---|---|---|---|---|
+| `fdpis_2_modelling.ipynb` | 632 s | PASS | 21 | yes |
+| `fdpis_3_propagation.ipynb` | 353 s | PASS | 24 | yes |
+| `fdpis_4_multihop.ipynb` | 36 s | PASS | 14 | yes |
+| `fdpis_5_integration.ipynb` | 61 s | PASS | 14 | yes |
+
+## F1. Fix 1 — target encodings persisted
+
+Two cells added after the `lookups` cell in notebook 2 (plus a markdown heading). The
+computation of the encodings was not touched; only persistence and verification.
+
+**`results/encodings.json` — 407,225 bytes (397.7 KB)**, `smoothing_m = 50`,
+`global_rate = 0.112631`.
+
+| Group | Keys | Entries |
+|---|---|---|
+| CARRIER | `OP_UNIQUE_CARRIER` | 14 |
+| ORIGIN | `ORIGIN` | 345 |
+| DEST | `DEST` | 345 |
+| ROUTE | `ORIGIN,DEST` | 6,407 |
+| ORIGIN_HOUR | `ORIGIN,DEP_HOUR` | 3,973 |
+| CARRIER_ORIGIN | `OP_UNIQUE_CARRIER,ORIGIN` | 1,572 |
+| CARRIER_HOUR | `OP_UNIQUE_CARRIER,DEP_HOUR` | 292 |
+| DOW_HOUR | `DAY_OF_WEEK,DEP_HOUR` | 168 |
+| **TOTAL** | | **13,116** |
+
+Composite keys are `"|"`-joined strings (`ABE|BNA`, `1|0`); all values are native Python
+floats.
+
+### Round-trip verification
+
+The JSON is loaded back and the `ENC_*` columns are rebuilt on the test set using only
+what a serving process would have, then compared against the in-memory columns.
+
+| Column | Max abs difference | Status |
+|---|---|---|
+| ENC_CARRIER | 0 | OK |
+| ENC_ORIGIN | 0 | OK |
+| ENC_DEST | 0 | OK |
+| ENC_ROUTE | 0 | OK |
+| ENC_ORIGIN_HOUR | 0 | OK |
+| ENC_CARRIER_ORIGIN | 0 | OK |
+| ENC_CARRIER_HOUR | 0 | OK |
+| ENC_DOW_HOUR | 0 | OK |
+| **worst across all columns** | **0** | **PASS** |
+
+The cell carries an `assert worst == 0.0`, so any future drift fails the notebook rather
+than passing silently. The model is now servable.
+
+## F2. Fix 2 — gate threshold selected on validation
+
+The sweep in notebook 3 now runs on `Xv` / `pval` and selects the threshold minimising
+**validation** MAE on actual cascades. The selection rule is unchanged; only the split
+it reads changed.
+
+### Validation sweep (this is what now drives the choice)
+
+| Threshold | val_mae_all | val_mae_cascades | val_flagged |
+|---|---|---|---|
+| **0.3** | 7.71 | **8.40** | 48,533 |
+| 0.4 | 7.32 | 8.81 | 43,326 |
+| 0.5 | 7.05 | 9.42 | 38,829 |
+| 0.6 | 6.84 | 10.26 | 34,578 |
+| 0.7 | 6.81 | 11.51 | 30,342 |
+
+```
+Threshold selected on VALIDATION = 0.3. Test metrics below are now unbiased.
+Validation selected 0.3 - the same value that was previously chosen on test.
+The number is unchanged, but it is now arrived at without touching test.
+```
+
+**The selected threshold is 0.3 — identical to the previous test-selected value.**
+`GATE_THRESHOLD` is now derived from the sweep; the string `GATE_THRESHOLD = 0.3` no
+longer appears anywhere in the notebook.
+
+The validation and test sweeps have the same shape — `mae_cascades` rises monotonically
+with threshold on both, so both minimise at 0.3.
+
+## F3. Fix 3 — category levels persisted
+
+### 3a — written to `results/layer4/config.json`
+
+Source: `cat_types[c].categories`, i.e. the `ptrain` cascade-candidate training split —
+the same object used to build the matrices the models were trained on.
+
+| Column | Levels written |
+|---|---|
+| `OP_UNIQUE_CARRIER` | 14 |
+| `ORIGIN` | 339 |
+| `DEST` | 339 |
+
+### 3b — read by notebooks 4 and 5, with out-of-vocabulary counts
+
+Both notebooks now build `cat_types` from `cfg['category_levels']`, falling back to the
+old full-dataset derivation behind an explicit warning if the key is absent. Identical
+output from both:
+
+```
+Category levels loaded from config.json (training-time levels):
+  OP_UNIQUE_CARRIER      14 levels | out-of-vocabulary rows: 0 of 1,718,426 (0.0000%)
+  ORIGIN                339 levels | out-of-vocabulary rows: 665 of 1,718,426 (0.0387%)
+  DEST                  339 levels | out-of-vocabulary rows: 289 of 1,718,426 (0.0168%)
+  (Out-of-vocabulary values become NaN, which XGBoost routes via its default branch.)
+```
+
+The six missing airports per column were previously given valid codes silently; they are
+now explicitly NaN and counted. 954 rows of 1,718,426 are affected in total.
+
+## F4. Before / after comparison
+
+### Notebook 2 — confirmed unchanged
+
+| Metric | Before | After | Difference |
+|---|---|---|---|
+| AUC (Blend) | 0.6819 | 0.6819 | **0** |
+| F1 | 0.351 | 0.351 | **0** |
+| precision@1% | 0.781 | 0.781 | **0** |
+
+The full 7-row model comparison and the ablation table are byte-identical. Fix 1 only
+adds persistence, so this is the expected result and confirms nothing was disturbed.
+
+### Notebook 3
+
+| Metric | Before | After | Difference |
+|---|---|---|---|
+| Gate AUC | 0.9272 | 0.9272 | **0** |
+| Gate precision | 0.785 | 0.785 | **0** |
+| Gate recall | 0.842 | 0.842 | **0** |
+| Hurdle MAE, all candidates (gate × mag) | 7.17 | 7.17 | **0** |
+| Hurdle MAE, actual cascades (gate × mag) | 9.80 | 9.80 | **0** |
+| Hurdle interval coverage (pre-gate) | 80.9% | 80.9% | **0** |
+| **Chosen threshold** | **0.30** *(from test)* | **0.30** *(from validation)* | **0 — but now unbiased** |
+| MAE at chosen threshold, all candidates | 7.67 | 7.67 | **0** |
+| MAE at chosen threshold, actual cascades | 8.35 | 8.35 | **0** |
+| Interval coverage at chosen threshold | 70.2% | 70.2% | **0** |
+
+The gate and hurdle models themselves are unchanged — Fix 2 alters only which split the
+threshold is read from, not any training. Every metric is identical.
+
+### Notebook 4
+
+| Depth | n before | n after | MAE cascades before | after | Corr before | after | Coverage before | after |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 21,999 | 21,999 | 8.67 | 8.67 | 0.790 | 0.790 | 0.771 | **0.770** |
+| 2 | 9,944 | **9,945** | 29.34 | 29.34 | 0.561 | **0.560** | 0.536 | 0.536 |
+| 3 | 3,809 | **3,810** | 40.89 | 40.89 | 0.433 | 0.433 | 0.476 | 0.476 |
+| 4 | 1,243 | 1,243 | 48.79 | 48.79 | 0.318 | 0.318 | 0.444 | 0.444 |
+| 5 | 328 | 328 | 62.52 | 62.52 | 0.262 | 0.262 | 0.497 | 0.497 |
+
+`n_cascades` at depth 2: 5,075 → **5,076**. All other cascade counts unchanged.
+
+Propagation depth accuracy:
+
+| Metric | Before | After | Difference |
+|---|---|---|---|
+| Cascades evaluated | 16,431 | **16,432** | **+1** |
+| Exactly correct | 54.4% | **54.3%** | **−0.1 pt** |
+| Within ±1 flight | 91.3% | 91.3% | **0** |
+| Mean signed error | +0.33 | +0.33 | **0** |
+
+**These are the only material changes in the whole exercise, and they come from Fix 3b.**
+With the 954 out-of-vocabulary rows now encoded as NaN rather than given codes, the gate
+fires on one additional leg at depth 2 and one at depth 3, carrying one extra cascade
+into the depth-accuracy population. MAE is unmoved at every depth; correlation shifts by
+0.001 at depth 2 and coverage by 0.001 at depth 1, both rounding-level.
+
+### Notebook 5
+
+| Metric | Before | After | Difference |
+|---|---|---|---|
+| `SHRINK` | 0.510 | 0.510 | **0** |
+| `PRIMARY_MEAN` | 21.55 | 21.55 | **0** |
+| `PRIMARY_MEDIAN` | 11.00 | 11.00 | **0** |
+| Zero-share | 24.0% | 24.0% | **0** |
+
+Total delay MAE by depth:
+
+| Depth | Before | After | Difference |
+|---|---|---|---|
+| 1 | 20.87 | 20.87 | **0** |
+| 2 | 31.88 | 31.88 | **0** |
+| 3 | 35.15 | 35.15 | **0** |
+| 4 | 38.66 | 38.66 | **0** |
+| 5 | 39.91 | 39.91 | **0** |
+
+Correlation by depth:
+
+| Depth | Before | After | Difference |
+|---|---|---|---|
+| 1 | 0.674 | 0.674 | **0** |
+| 2 | 0.428 | 0.428 | **0** |
+| 3 | 0.327 | 0.327 | **0** |
+| 4 | 0.233 | 0.233 | **0** |
+| 5 | 0.226 | 0.226 | **0** |
+
+Inherited component MAE by depth:
+
+| Depth | Before | After | Difference |
+|---|---|---|---|
+| 1 | 8.67 | 8.67 | **0** |
+| 2 | 26.25 | 26.25 | **0** |
+| 3 | 33.89 | 33.89 | **0** |
+| 4 | 36.43 | 36.43 | **0** |
+| 5 | 42.53 | 42.53 | **0** |
+
+One incidental change: the **propagation-only baseline** `mae_old` at depth 3 moved
+**42.55 → 42.54** (−0.01). That is the Notebook-4-style chain, which inherits the extra
+depth-3 leg from Fix 3b. Every integrated figure is unchanged. Depth counts
+(21,999 / 13,167 / 7,234 / 3,421 / 1,377) are identical — notebook 5 does not prune, so
+the extra legs notebook 4 picked up do not alter its populations.
+
+## F5. Assessment
+
+### Did the unbiased threshold change conclusions? No — marginally at most.
+
+**Validation independently selects 0.30, the same threshold previously chosen on test.**
+Every downstream metric is therefore identical: MAE 7.67 all candidates, 8.35 on actual
+cascades, coverage 70.2%. The contamination described in audit §5.3 was real as a
+*process* defect, but it turned out to have **no numerical consequence**. The two sweeps
+have the same monotone shape, so both land on the same end of the grid.
+
+**No previously reported figure needs revising in project documentation.** The headline
+numbers — precision@1% 0.781, 5.0× lift, AUC 0.6819, Layer 4 MAE 8.35, the depth tables —
+all stand exactly as published. What changed is their *defensibility*: the threshold is
+now selected without the test set, so the reported test performance is genuinely
+out-of-sample rather than merely believed to be.
+
+That is worth saying precisely, because it is a stronger claim than "the numbers didn't
+move". Before this fix we could not have distinguished "0.3 is genuinely optimal" from
+"0.3 looks optimal because we peeked". Now we can, and it is the former.
+
+### One caveat on the sweep itself
+
+On both validation and test, `mae_cascades` **increases monotonically** across the grid
+and the minimum sits at **0.3, the lowest value swept**. The optimum may well lie below
+0.3 — the grid never looks there. This was equally true of the original test-based sweep,
+so it is not a regression, but the selected threshold is a boundary solution rather than
+an interior minimum. Extending the grid downward (0.1, 0.15, 0.2, 0.25) on validation
+would either confirm 0.3 or find something better, and it is cheap. I have not changed
+the grid, since the brief was explicit about sweeping the same thresholds.
+
+### Fix 3 turned a silent assumption into a measured one
+
+The audit retracted §5.2 after establishing that XGBoost 3.2.0 re-codes categories by
+value, so the positional mismatch was harmless. Fix 3 removes the reliance on that
+behaviour entirely — but it also surfaced something the old code hid: **954 rows carry an
+airport the models never trained on** (665 ORIGIN, 289 DEST, 0.0387% and 0.0168%). Those
+were previously handed valid-looking codes; they are now explicitly NaN and counted in
+the output.
+
+That is the source of the only real movement in this exercise: one extra leg at depth 2,
+one at depth 3, one extra cascade in the depth-accuracy population, and a 0.1 pt drop in
+"exactly correct" (54.4% → 54.3%). These are rounding-scale and do not affect any
+conclusion. The value of the change is that the out-of-vocabulary count is now visible on
+every run instead of being invisible.
+
+### Fix 1 is the one with real operational consequence
+
+Neither Fix 2 nor Fix 3 moved a number that matters. Fix 1 changes what the project can
+actually do: before it, the trained classifier could not be deployed, because the eight
+`ENC_*` features — which include the two highest-importance features in the entire model
+(`ENC_ROUTE` 0.186, `ENC_ORIGIN_HOUR` 0.140, together 33% of total importance) — existed
+only in a dead kernel. `results/encodings.json` with a verified-exact round trip closes
+that gap.
+
+Note this interacts with audit §5.7, which still stands: the target-encoding group has a
+**negative ablation gain (−0.0131 AUC)** while dominating feature importance. The
+encodings are now servable; whether they should be in the model at all remains an open
+question worth a no-group-D comparison run.
+
+### Remaining audit findings, unaffected
+
+§5.4 (interval coverage 70.2% against a nominal 80%), §5.5 (depth cohorts differ between
+notebooks 4 and 5), §5.6 (reported `pred_total` is shrunk while `chain_total` propagates
+unshrunk), §5.7 (negative ablation gain on encodings), §5.8 (non-contiguous months) are
+all untouched by these three fixes.
+
+### Files changed
+
+- `fdpis_2_modelling.ipynb` — markdown heading + 2 cells added after the `lookups` cell
+  (37 cells, was 34).
+- `fdpis_3_propagation.ipynb` — sweep cell rewritten for validation selection; save cell
+  rewritten to derive `GATE_THRESHOLD` and persist `category_levels`.
+- `fdpis_4_multihop.ipynb`, `fdpis_5_integration.ipynb` — `cat_types` now read from
+  config with fallback and OOV reporting.
+- New artifact: `results/encodings.json` (407,225 B).
+- `results/layer4/config.json` now carries `category_levels`.
+- All model and results artifacts regenerated by the rerun.
+
+No model hyperparameters, feature sets or split logic were changed. Notebook 1 was not
+modified or rerun.
+
+---
+
+# CHECKS A AND B
+
+Run 2026-09-13. Both checks are additive — new cells only, no existing cell modified,
+no configuration changed. Backups at `<scratchpad>/backup_checksAB/`.
+
+| Notebook | Runtime | Result | Cells |
+|---|---|---|---|
+| `fdpis_3_propagation.ipynb` (Check A) | 238 s | PASS, zero errors | 40 → 42 |
+| `fdpis_2_modelling.ipynb` (Check B) | 843 s | PASS, zero errors | 37 → 41 |
+
+Notebooks 1, 4 and 5 were not rerun — nothing affecting them changed.
+
+## A1. Extended validation sweep (the selection basis)
+
+Validation rows 84,455 | genuinely propagating 37,568 (44.5%).
+
+| Threshold | val_mae_all | val_mae_cascades | flagged | flagged % | gate precision | gate recall |
+|---|---|---|---|---|---|---|
+| **0.05** | 9.31 | **7.97** | 66,533 | 78.8 | 0.563 | 0.997 |
+| 0.10 | 8.76 | 8.00 | 61,837 | 73.2 | 0.601 | 0.990 |
+| 0.15 | 8.43 | 8.06 | 58,098 | 68.8 | 0.633 | 0.978 |
+| 0.20 | 8.17 | 8.15 | 54,543 | 64.6 | 0.663 | 0.962 |
+| 0.25 | 7.92 | 8.26 | 51,405 | 60.9 | 0.691 | 0.945 |
+| **0.30** *(deployed)* | 7.71 | 8.40 | 48,533 | 57.5 | **0.716** | **0.925** |
+| 0.40 | 7.32 | 8.81 | 43,326 | 51.3 | 0.764 | 0.881 |
+| 0.50 | 7.05 | 9.42 | 38,829 | 46.0 | 0.808 | 0.835 |
+| 0.60 | 6.84 | 10.26 | 34,578 | 40.9 | 0.849 | 0.782 |
+| 0.70 | 6.81 | 11.51 | 30,342 | 35.9 | 0.888 | 0.717 |
+
+```
+Minimises val_mae_cascades : threshold 0.05  (val_mae_cascades 7.97)
+Position in grid           : STILL AT BOUNDARY   (grid spans 0.05 to 0.7)
+At threshold 0.05          : gate precision 0.563 | recall 0.997 | flags 78.8% of rows
+Deployed GATE_THRESHOLD remains 0.3 - this cell changes nothing.
+```
+
+## A2. Extended test sweep — REPORTING ONLY, NOT FOR SELECTION
+
+| Threshold | test_mae_all | test_mae_cascades | flagged | flagged % | gate precision | gate recall |
+|---|---|---|---|---|---|---|
+| 0.05 | 9.35 | 7.92 | 57,763 | 77.9 | 0.533 | 0.997 |
+| 0.10 | 8.78 | 7.96 | 53,594 | 72.3 | 0.570 | 0.989 |
+| 0.15 | 8.44 | 8.02 | 50,123 | 67.6 | 0.602 | 0.976 |
+| 0.20 | 8.16 | 8.10 | 47,061 | 63.5 | 0.632 | 0.962 |
+| 0.25 | 7.89 | 8.21 | 44,214 | 59.7 | 0.660 | 0.945 |
+| **0.30** | 7.67 | 8.35 | 41,637 | 56.2 | **0.688** | **0.927** |
+| 0.40 | 7.27 | 8.70 | 37,165 | 50.1 | 0.738 | 0.888 |
+| 0.50 | 6.92 | 9.22 | 33,162 | 44.7 | 0.785 | 0.842 |
+| 0.60 | 6.66 | 10.04 | 29,473 | 39.8 | 0.830 | 0.792 |
+| 0.70 | 6.55 | 11.30 | 25,738 | 34.7 | 0.874 | 0.728 |
+
+Test tracks validation closely at every threshold, so the picture generalises.
+
+## A3. Assessment — is a threshold below 0.30 usable?
+
+**No.**
+
+The argmin is 0.05 and it is **still at the boundary**. Extending the grid did not find
+an interior optimum because — and this is the substantive finding — **the selection
+metric cannot have one.**
+
+`mae_cascades` is measured only on rows where the target is already greater than zero.
+On those rows, emitting `h_mid` always beats emitting 0, so lowering the threshold flags
+more of them and the metric improves. It is **monotonically decreasing as the threshold
+approaches 0, by construction**, and is minimised by flagging everything. No grid
+extension will ever produce an interior minimum.
+
+Meanwhile `mae_all` moves the opposite way (9.31 at 0.05 down to 6.81 at 0.70) and is
+minimised at the *highest* threshold. The two objectives pull in opposite directions and
+neither has an interior optimum. **0.30 was never an optimum in either metric.** It is a
+judgement call about where to sit on the precision/recall curve — which the extended grid
+makes visible rather than changes.
+
+The gate columns settle usability. Moving 0.30 → 0.05 buys 0.43 min of `mae_cascades`
+(8.40 → 7.97, about 5%) and costs:
+
+- flag volume **57.5% → 78.8%** of all cascade candidates
+- gate precision **0.716 → 0.563** — barely better than a coin flip per flag
+- `mae_all` **7.71 → 9.31**, a 21% *degradation*
+
+A gate that fires on four flights in five is not a gate. It has stopped discriminating,
+and the MAE gain is an artifact of the metric's construction rather than a real
+improvement.
+
+**Recommendation: leave `GATE_THRESHOLD` at 0.30.** At that point the gate catches 93% of
+genuine propagation at ~72% precision while flagging 58% of candidates — a defensible
+operating point. Nothing was changed; `config.json` is untouched.
+
+If you want a principled selection rather than a judgement call, the fix is to change the
+**objective**, not the grid: minimise `mae_all`, maximise gate F1, or apply an explicit
+cost ratio for a false flag versus a missed cascade. That is a decision about operational
+cost, so it belongs to you rather than to a diagnostic cell.
+
+## B1-B3. Feature group D ablation
+
+Both variants use the full model's exact hyperparameters, splits, `scale_pos_weight` and
+`random_state`; only the feature list differs.
+
+| Configuration | n_feat | AUC | F1 | p@1% | p@5% |
+|---|---|---|---|---|---|
+| Full — Blend (published baseline) | 40 | 0.6819 | 0.351 | 0.781 | 0.459 |
+| Full — XGBoost (like-for-like) | 40 | 0.6777 | 0.348 | 0.779 | 0.456 |
+| **Without ENC_\* group** | **32** | **0.6879** | **0.357** | 0.772 | 0.455 |
+| Without raw categoricals | 37 | 0.6795 | 0.349 | 0.757 | 0.457 |
+
+Full metric rows:
+
+```
+Without ENC_* group      auc 0.6879  pr_auc 0.3295  precision 0.26  recall 0.57  f1 0.357  p@1% 0.772  p@5% 0.455  p@10% 0.374
+Without raw categoricals auc 0.6795  pr_auc 0.3230  precision 0.25  recall 0.58  f1 0.349  p@1% 0.757  p@5% 0.457  p@10% 0.373
+```
+
+**Deltas vs the like-for-like full-feature XGBoost baseline** (the B1/B2 variants are
+single XGBoost models, so the Blend is not a valid comparator for them):
+
+| Configuration | n_feat | ΔAUC | ΔF1 | Δp@1% | Δp@5% |
+|---|---|---|---|---|---|
+| Without ENC_* group | 32 | **+0.0102** | **+0.009** | −0.007 | −0.001 |
+| Without raw categoricals | 37 | +0.0018 | +0.001 | **−0.022** | +0.001 |
+
+Early stopping: full model best iter 125; no-ENC 68; no-raw 225.
+
+## B4. Verdict string as printed
+
+```
+No-ENC model vs like-for-like baseline: dAUC = +0.0102 | dp@1% = -0.007
+Rule: |dAUC| < 0.005 AND |dp@1%| < 0.02
+      |0.0102| = 0.0102 >= 0.005
+      |-0.007| = 0.007 < 0.02
+
+ENCODINGS REQUIRED - Fix 1 persistence was necessary
+```
+
+**The rule fired, but it fires the wrong way here.** It tests `|ΔAUC|` — magnitude, not
+direction — and was written on the assumption that dropping the encodings would *cost*
+AUC. The measured delta is **+0.0102: dropping them makes the model better**. A large
+improvement trips the same branch a large degradation would. Read literally the output
+says "REQUIRED"; read correctly the evidence says the opposite. Both are recorded here;
+see B6.
+
+## B5. Top 15 importances, 32-feature model (no ENC_*)
+
+| Rank | Feature | Importance |
+|---|---|---|
+| 1 | LEG_FRACTION | 0.1624 |
+| 2 | LEG_NUM | 0.1095 |
+| 3 | SCHEDULED_BUFFER_MIN | 0.0820 |
+| 4 | IS_LAST_LEG | 0.0646 |
+| 5 | DEP_HOUR_SIN | 0.0581 |
+| 6 | AVAILABLE_SLACK | 0.0571 |
+| 7 | ORIGIN | 0.0445 |
+| 8 | OP_UNIQUE_CARRIER | 0.0418 |
+| 9 | TAIL_LEGS_TODAY | 0.0415 |
+| 10 | CRS_DEP_TIME | 0.0384 |
+| 11 | DEST | 0.0359 |
+| 12 | ARR_HOUR_COS | 0.0252 |
+| 13 | DAY_OF_WEEK | 0.0226 |
+| 14 | ORIGIN_DAY_DEPARTURES | 0.0176 |
+| 15 | DOW_SIN | 0.0159 |
+
+Full 40-feature model top 5 for contrast: ENC_ROUTE 0.1857, ENC_ORIGIN_HOUR 0.1401,
+LEG_NUM 0.0742, ENC_CARRIER_HOUR 0.0571, AVAILABLE_SLACK 0.0517.
+
+With the encodings gone the model falls back onto **rotation structure** —
+`LEG_FRACTION`, `LEG_NUM`, `SCHEDULED_BUFFER_MIN`, `IS_LAST_LEG`, `AVAILABLE_SLACK` are
+five of the top six, and the raw categoricals `ORIGIN`/`OP_UNIQUE_CARRIER`/`DEST` pick up
+the location signal directly. This is the same conclusion as the feature ablation in
+§3.2: rotation features carry the model.
+
+## B6. Assessment — should the encodings stay in production?
+
+**On this evidence, no. They should go.** Three findings point the same way.
+
+**1. Dropping them improves the model.** The 32-feature variant beats the like-for-like
+40-feature XGBoost on AUC (+0.0102) and F1 (+0.009), ties on p@5% (−0.001), and loses
+only 0.007 on p@1% (0.779 → 0.772). Eight features removed, and the primary discrimination
+metric goes *up*. This is consistent with the feature ablation in §3.2, where group D was
+the only group with a negative marginal gain (−0.0131 AUC). Two independent experiments
+now agree the encodings subtract from AUC.
+
+**2. The reverse test confirms they are the weaker representation.** This was the test's
+purpose, and it answers cleanly:
+
+- dropping the 8 encodings → p@1% **−0.007**
+- dropping the 3 raw categoricals → p@1% **−0.022**, three times worse
+
+The raw categoricals carry location and carrier signal more efficiently than the
+encodings do. When both are present the trees prefer the encodings by split count —
+33% of importance — but that preference does not convert into held-out performance. High
+split-usage with negative held-out gain is the standard signature of target-encoding
+overfitting, and it reproduces here.
+
+**3. It converges faster.** Best iteration 68 without the encodings versus 125 with them
+— roughly half the trees for a better AUC.
+
+### The one reservation
+
+**p@1% is the product's headline metric, and it does dip.** 0.779 → 0.772 on the
+like-for-like comparison, and the *published* figure is the Blend's 0.781, which was not
+re-tested without encodings. A no-ENC blend is the missing experiment. Before committing
+to a 32-feature production model I would rerun the three-model blend on `FEATS_NO_ENC` and
+confirm p@1% holds near 0.78. That is one cheap run and it removes the only genuine
+objection.
+
+### What this means for the Fix 1 persistence work
+
+Fix 1 is **not wasted, but it may become unnecessary**. It was correct to build: at the
+time, the encodings were in the production feature set and the model was unservable
+without them. If you adopt the 32-feature model:
+
+- `results/encodings.json` (407 KB, 13,116 entries) stops being a deployment artifact
+- the API needs no unseen-key fallback and no `global_rate` default path
+- the serving feature set is 32 columns, all derivable from the schedule plus the
+  rotation graph, with no fitted lookup state to version or refresh
+- the training/serving skew risk that target encodings introduce disappears entirely
+
+That last point is worth weighing beyond the metrics. Target encodings are fitted state:
+they must be recomputed as the network changes, versioned alongside the model, and kept
+consistent between training and serving. Removing them removes a whole class of
+production failure for, on this evidence, no measurable cost.
+
+**Recommendation:** run the no-ENC blend to confirm p@1%, and if it holds near 0.78, drop
+group D from the production feature set. Keep `encodings.json` and its verification cell
+in the repository either way — they are the evidence for the decision, and they are needed
+if the encodings stay.
+
+## B7. Confirmation — baseline unchanged, `ALL_FEATURES` not modified
+
+| Metric | Expected | Measured | Match |
+|---|---|---|---|
+| AUC (Blend) | 0.6819 | 0.6819 | yes |
+| F1 | 0.351 | 0.351 | yes |
+| precision@1% | 0.781 | 0.781 | yes |
+
+Printed by the notebook at the end of Check B:
+
+```
+ALL_FEATURES untouched: 40 features; ENC_* still present: True
+```
+
+`ALL_FEATURES` still holds 40 features with all eight `ENC_*` columns present. The
+production feature set, the saved model `results/xgb_primary_classifier.json`, and the
+three results CSVs are unchanged. Both checks are diagnostic cells only: the Check B
+insertion asserted at apply time that every pre-existing cell source was byte-identical
+after the append, and Check A changed no configuration value.
+
+Nothing in `results/layer4/config.json` was modified — `gate_threshold` remains 0.3.
+
+---
+
+# BLEND WITHOUT ENCODINGS
+
+Run 2026-09-13. Diagnostic only — four cells appended to `fdpis_2_modelling.ipynb`
+(41 → 45 cells), no existing cell modified, `ALL_FEATURES` unchanged, production model
+not overwritten. Notebook 2 executed linearly: **748 s, zero errors, sequential
+execution counts**. Backup at `<scratchpad>/backup_blend/`.
+
+All three components use hyperparameters, splits, `scale_pos_weight` and `random_state`
+identical to the production blend; the soft vote is the same mean of three predicted
+probabilities. Only the feature list differs.
+
+## BL1. Blend comparison
+
+| Configuration | n_feat | AUC | PR-AUC | Prec | Recall | F1 | p@1% | p@5% | p@10% |
+|---|---|---|---|---|---|---|---|---|---|
+| Blend WITH encodings | 40 | 0.6819 | 0.3267 | 0.252 | 0.580 | 0.351 | **0.781** | 0.459 | 0.374 |
+| Blend WITHOUT encodings | 32 | **0.6924** | **0.3339** | **0.260** | **0.585** | **0.360** | **0.781** | 0.458 | **0.380** |
+| **DELTA (without − with)** | **−8** | **+0.0105** | **+0.0072** | **+0.008** | **+0.005** | **+0.009** | **0.000** | **−0.001** | **+0.006** |
+
+**p@1% is identical to three decimal places — 0.781 either way.** Every other metric
+except p@5% (−0.001) improves, on eight fewer features.
+
+## BL2. Per-component results, 32 features
+
+| Model | AUC | PR-AUC | Prec | Recall | F1 | p@1% | p@5% | p@10% |
+|---|---|---|---|---|---|---|---|---|
+| XGBoost (no ENC) | 0.6879 | 0.3295 | 0.260 | 0.570 | 0.357 | 0.772 | 0.455 | 0.374 |
+| HistGradientBoosting (no ENC) | 0.6880 | 0.3276 | 0.254 | 0.591 | 0.356 | 0.775 | 0.452 | 0.372 |
+| LightGBM (no ENC) | 0.6855 | 0.3248 | 0.254 | 0.585 | 0.355 | 0.768 | 0.443 | 0.372 |
+| **Blend (soft vote, no ENC)** | **0.6924** | **0.3339** | 0.260 | 0.585 | **0.360** | **0.781** | 0.458 | **0.380** |
+
+Component-by-component against their with-encoding counterparts:
+
+| Component | AUC with | AUC without | ΔAUC | p@1% with | p@1% without | Δp@1% |
+|---|---|---|---|---|---|---|
+| XGBoost | 0.6777 | 0.6879 | **+0.0102** | 0.779 | 0.772 | −0.007 |
+| HistGradientBoosting | 0.6791 | 0.6880 | **+0.0089** | 0.760 | 0.775 | **+0.015** |
+| LightGBM | 0.6801 | 0.6855 | **+0.0054** | 0.768 | 0.768 | 0.000 |
+| Blend | 0.6819 | 0.6924 | **+0.0105** | 0.781 | 0.781 | 0.000 |
+
+**The AUC gain holds across all three components — it is not driven by one model.**
+On p@1% the components disagree in direction (XGBoost −0.007, HistGB +0.015, LightGBM 0),
+and the blend averages those disagreements out to exactly zero. That is the blend doing
+its job: the p@1% dip that Check B found in the single XGBoost is a component-level
+artifact, not a property of the ensemble.
+
+Note also that the blend without encodings (0.6924) beats every individual model in the
+original 7-model comparison, including the 40-feature blend.
+
+## BL3. Verdict as printed
+
+```
+delta_p1  = +0.0000
+delta_auc = +0.0105
+
+DROP ENCODINGS - blend holds, model is simpler and AUC improves
+```
+
+Rule satisfied on both arms: `delta_p1 (0.0000) >= -0.01` and `delta_auc (+0.0105) > 0`.
+Unlike the Check B rule, this one tests direction, so it fires correctly.
+
+## BL4. Per-carrier precision@1%
+
+| Carrier | Test flights | Top-1% n | Base rate | Prec WITH | Prec WITHOUT | Δ | Lift without |
+|---|---|---|---|---|---|---|---|
+| DL | 35,041 | 350 | 0.154 | 0.951 | 0.951 | 0.000 | 6.18 |
+| OO | 30,044 | 300 | 0.186 | 0.863 | 0.880 | +0.017 | 4.73 |
+| G4 | 4,702 | 47 | 0.122 | 0.723 | 0.809 | **+0.085** | 6.62 |
+| WN | 42,169 | 421 | 0.159 | 0.779 | 0.800 | +0.021 | 5.04 |
+| NK | 6,842 | 68 | 0.176 | 0.735 | 0.794 | +0.059 | 4.52 |
+| AS | 7,814 | 78 | 0.190 | 0.692 | 0.782 | **+0.090** | 4.12 |
+| HA | 2,603 | 26 | 0.102 | 0.731 | 0.577 | **−0.154** | 5.67 |
+| UA | 25,103 | 251 | 0.150 | 0.510 | 0.534 | +0.024 | 3.57 |
+| AA | 28,920 | 289 | 0.159 | 0.505 | 0.533 | +0.028 | 3.36 |
+| B6 | 6,982 | 69 | 0.161 | 0.478 | 0.493 | +0.014 | 3.07 |
+| YX | 10,715 | 107 | 0.122 | 0.486 | 0.458 | −0.028 | 3.75 |
+| F9 | 5,440 | 54 | 0.188 | 0.407 | 0.426 | +0.019 | 2.26 |
+| OH | 6,912 | 69 | 0.137 | 0.464 | 0.391 | −0.072 | 2.86 |
+| MQ | 9,814 | 98 | 0.090 | 0.276 | 0.276 | 0.000 | 3.07 |
+
+| Aggregate | WITH enc | WITHOUT enc | Δ |
+|---|---|---|---|
+| Global precision@1% | 0.781 | 0.781 | **+0.000** |
+| Mean per-carrier | 0.614 | 0.622 | **+0.007** |
+| Weighted by volume | 0.681 | **0.696** | **+0.015** |
+
+**Eleven of fourteen carriers improve or hold.** Three degrade: HA −0.154, OH −0.072,
+YX −0.028. HA is the smallest carrier in the set — 2,603 test flights, top-1% of just
+**26 flights**, where a single flight moves precision by 3.8 points, so a −0.154 swing is
+four flights and is inside the noise. OH and YX are regionals with 69 and 107 flights in
+their review queues respectively; both are also thin.
+
+The carriers that matter commercially move the right way: **AA +0.028 and UA +0.024**,
+the two large legacy carriers previously identified in §3.3 as landing near half the
+headline figure. They remain the weakest large carriers, but both improve.
+
+## BL5. Assessment — drop the encodings from the production feature set
+
+**Yes. The evidence is now unambiguous, and the one reservation from §B6 is resolved.**
+
+The objection to Check B was that it tested a single XGBoost while the headline comes
+from the blend. That objection is answered: **the blend holds p@1% at exactly 0.781** —
+not approximately, identically — while AUC rises 0.6819 → 0.6924, F1 0.351 → 0.360 and
+p@10% 0.374 → 0.380, on eight fewer features. The only metric that moves against is
+p@5%, by 0.001.
+
+Four independent results now point the same way:
+
+1. **The §3.2 feature ablation** gave group D a marginal gain of **−0.0131 AUC** — the
+   only negative group in the table.
+2. **Check B** showed a single XGBoost improves by **+0.0102 AUC** when they are removed.
+3. **Check B's reverse test** showed dropping the raw categoricals costs three times more
+   p@1% (−0.022) than dropping the encodings (−0.007) — the encodings are the weaker of
+   the two representations.
+4. **This blend test** shows the ensemble improves on AUC and holds the headline metric
+   exactly.
+
+The mechanism is consistent throughout: the encodings carry real signal individually —
+`ENC_ROUTE` 0.186 and `ENC_ORIGIN_HOUR` 0.140 are the top two features by split count —
+but that signal is **already available** from `ORIGIN`, `DEST` and `OP_UNIQUE_CARRIER`,
+which the trees can split on directly. High split-usage combined with negative held-out
+gain is the textbook signature of target-encoding overfitting, and it reproduces at every
+level of the stack.
+
+Per-carrier deployment, which is how the product would actually be sold, also improves:
+volume-weighted precision **0.681 → 0.696**.
+
+### What changes if you adopt the 32-feature model
+
+- **Production feature set becomes 32 columns**, all derivable from the published
+  schedule plus the rotation graph. No fitted lookup state.
+- **`results/encodings.json` stops being a deployment artifact.** 407 KB and 13,116
+  entries no longer need to be versioned, shipped or refreshed alongside the model.
+- **The API needs no unseen-key fallback** and no `global_rate` default path.
+- **A whole class of production failure disappears.** Target encodings are fitted state
+  that must stay consistent between training and serving; when the route network changes
+  they go stale silently. Removing them removes that risk entirely.
+- **Training is faster** — XGBoost early-stops at iteration 68 instead of 125.
+
+### Caveats worth stating
+
+- **p@1% is identical, not better.** The case for dropping rests on AUC, F1, simplicity
+  and operational risk — not on a headline improvement. If AUC is not a metric the
+  project cares about, the honest summary is "no worse, and much simpler".
+- **Three small carriers degrade** (HA, OH, YX), all with review queues under 110
+  flights where a handful of flights swings the number. Worth re-checking on more data
+  before promising per-carrier figures to a regional operator.
+- **The published documentation does not need revising if you drop them.** Global p@1%
+  stays 0.781 and lift stays 5.0×. The weighted per-carrier figure would improve from
+  0.681 to 0.696 and should be updated if it is quoted anywhere.
+- **Fix 1 was not wasted.** It was correct when the encodings were in the production set,
+  it produced the verified-exact persistence that made the model servable at the time, and
+  `encodings.json` plus its round-trip cell remain the evidence for this decision. Keep
+  them in the repository regardless.
+
+### Recommendation
+
+Drop feature group D from the production feature set and adopt the 32-feature blend.
+This is a change to `ALL_FEATURES` and a retrain of the saved model, which I have **not**
+made — the production configuration is untouched and this section is diagnostic only.
+
+## BL6. Confirmation — nothing production was changed
+
+| Check | Expected | Measured | Match |
+|---|---|---|---|
+| Blend AUC | 0.6819 | 0.6819 | yes |
+| Blend F1 | 0.351 | 0.351 | yes |
+| Blend precision@1% | 0.781 | 0.781 | yes |
+
+```
+ALL_FEATURES untouched: 40 features; ENC_* still present: True
+```
+
+`results/model_comparison.csv` still reports the 40-feature blend at
+`0.6819,0.3267,0.252,0.58,0.351,0.781,0.459,0.374`. `ALL_FEATURES` still holds 40
+features with all eight `ENC_*` columns. `results/xgb_primary_classifier.json` is the
+40-feature model, regenerated by this run at its usual 7,389,886 bytes — the diagnostic
+models were held in local variables and never saved. The insertion asserted at apply time
+that every pre-existing cell source was byte-identical after the append.
+
+---
+
+# PRODUCTION: ENCODINGS REMOVED
+
+Applied 2026-09-13. This is a production change: the 8 `ENC_*` target-encoding features
+are no longer part of `ALL_FEATURES` and the saved model is retrained on 32 features.
+Backups of all five notebooks at `<scratchpad>/backup_prod_enc_removal/`.
+
+Evidence base (four independent results, all recorded above): §3.2 ablation group D
+marginal gain **−0.0131 AUC**; Check B single model **+0.0102 AUC** when dropped; Check B
+reverse test — dropping raw categoricals costs **3× more** p@1%; blend confirmation
+**+0.0105 AUC, +0.009 F1, p@1% unchanged at 0.781**.
+
+## P1. `ALL_FEATURES` is now 32 features
+
+```
+32 PRODUCTION features across 5 groups - leakage check passed.
+  A_schedule      9
+  B_cyclical      6
+  C_categorical   3
+  E_congestion    5
+  F_rotation      9
+
+Ablation study retains all 6 groups (40 features) so the published table stays reproducible.
+  excluded from production: ['D_encodings'] (8 features)
+```
+
+The exact production list:
+
+| Group | Features |
+|---|---|
+| A_schedule (9) | `CRS_DEP_TIME`, `CRS_ARR_TIME`, `DEP_HOUR`, `ARR_HOUR`, `CRS_ELAPSED_TIME`, `DISTANCE`, `SPEED_PROXY`, `DAY_OF_WEEK`, `IS_WEEKEND` |
+| B_cyclical (6) | `DEP_HOUR_SIN`, `DEP_HOUR_COS`, `ARR_HOUR_SIN`, `ARR_HOUR_COS`, `DOW_SIN`, `DOW_COS` |
+| C_categorical (3) | `OP_UNIQUE_CARRIER`, `ORIGIN`, `DEST` |
+| E_congestion (5) | `ORIGIN_HOUR_DEPARTURES`, `DEST_HOUR_ARRIVALS`, `ORIGIN_DAY_DEPARTURES`, `CARRIER_ORIGIN_FLIGHTS`, `CARRIER_ORIGIN_SHARE` |
+| F_rotation (9) | `LEG_NUM`, `TAIL_LEGS_TODAY`, `LEG_FRACTION`, `IS_LAST_LEG`, `MINUTES_INTO_TAIL_DAY`, `SCHEDULED_BUFFER_MIN`, `AVAILABLE_SLACK`, `IS_TIGHT_TURNAROUND`, `LONG_GROUND_TIME` |
+
+Removed from production: `ENC_CARRIER`, `ENC_ORIGIN`, `ENC_DEST`, `ENC_ROUTE`,
+`ENC_ORIGIN_HOUR`, `ENC_CARRIER_ORIGIN`, `ENC_CARRIER_HOUR`, `ENC_DOW_HOUR`.
+
+**How it was restructured.** The cell now defines `ABLATION_GROUPS` with all six groups
+(the published study) and derives the production set from it:
+
+```python
+DROPPED_GROUPS = ['D_encodings']
+GROUPS = {k: v for k, v in ABLATION_GROUPS.items() if k not in DROPPED_GROUPS}
+ALL_FEATURES = [f for g in GROUPS.values() for f in g]
+```
+
+The ablation loop iterates `ABLATION_GROUPS`; everything else uses `ALL_FEATURES`. The
+encoding computation cell was **not** deleted — the ablation needs it.
+
+## P2. The §3.2 ablation still produces all six rows, unchanged
+
+```
+        model  n_feat    auc auc_gain  pr_auc    f1  p@1%  p@5%  p@10%
+   A_schedule       9 0.6357           0.2275 0.322 0.280 0.277  0.265
+   B_cyclical      15 0.6385   0.0028  0.2345 0.321 0.316 0.303  0.279
+C_categorical      18 0.6519   0.0134  0.2476 0.330 0.374 0.314  0.293
+  D_encodings      26 0.6388  -0.0131  0.2400 0.319 0.355 0.309  0.290
+ E_congestion      31 0.6410   0.0022  0.2420 0.322 0.366 0.313  0.293
+   F_rotation      40 0.6777   0.0367  0.3239 0.348 0.779 0.456  0.371
+```
+
+Byte-identical to the published table in §3.2, including the `D_encodings` row and its
+−0.0131 gain. The ablation remains reproducible.
+
+## P3. New production metrics vs previously published
+
+Seven-way model comparison, 32 features:
+
+| Model | AUC | PR-AUC | Prec | Recall | F1 | p@1% | p@5% | p@10% |
+|---|---|---|---|---|---|---|---|---|
+| **Blend (soft vote)** | **0.6924** | **0.3339** | 0.260 | 0.585 | **0.360** | **0.781** | 0.458 | 0.380 |
+| RandomForest | 0.6894 | 0.3305 | 0.267 | 0.542 | 0.358 | 0.775 | 0.456 | 0.374 |
+| HistGradientBoosting | 0.6880 | 0.3276 | 0.254 | 0.591 | 0.356 | 0.775 | 0.452 | 0.372 |
+| XGBoost | 0.6879 | 0.3295 | 0.260 | 0.570 | 0.357 | 0.772 | 0.455 | 0.374 |
+| LightGBM | 0.6855 | 0.3248 | 0.254 | 0.585 | 0.355 | 0.768 | 0.443 | 0.372 |
+| LogisticRegression | 0.6551 | 0.2543 | 0.237 | 0.551 | 0.331 | 0.382 | 0.342 | 0.312 |
+| Majority baseline | 0.5000 | 0.1561 | 0.156 | 1.000 | 0.270 | 0.156 | 0.156 | 0.156 |
+
+Headline blend, old vs new:
+
+| Metric | Old (40 feat) | New (32 feat) | Delta |
+|---|---|---|---|
+| AUC | 0.6819 | **0.6924** | **+0.0105** |
+| PR-AUC | 0.3267 | 0.3339 | +0.0072 |
+| Precision | 0.252 | 0.260 | +0.008 |
+| Recall | 0.580 | 0.585 | +0.005 |
+| F1 | 0.351 | **0.360** | **+0.009** |
+| p@1% | 0.781 | **0.781** | **0.000** |
+| p@5% | 0.459 | 0.458 | −0.001 |
+| p@10% | 0.374 | 0.380 | +0.006 |
+| Lift @1% | 5.00× | 5.01× | +0.01 |
+
+Tolerance check from the notebook — all five gated metrics exact to four decimals:
+
+```
+metric      expected    actual     delta   status
+auc           0.6924    0.6924   +0.0000   OK
+f1            0.3600    0.3600   +0.0000   OK
+p@1%          0.7810    0.7810   +0.0000   OK
+p@5%          0.4580    0.4580   +0.0000   OK
+p@10%         0.3800    0.3800   +0.0000   OK
+```
+
+Saved artifact `results/xgb_primary_classifier.json` is the XGBoost component:
+AUC 0.6879, PR-AUC 0.3295, F1 0.357, p@1% 0.772. **Size 5,467,472 bytes, down from
+7,389,886** — a 26% smaller model, rewritten 2026-09-13 13:39:21.
+
+Top feature importances now: `LEG_FRACTION` 0.162, `LEG_NUM` 0.109,
+`SCHEDULED_BUFFER_MIN` 0.082, `IS_LAST_LEG` 0.065, `DEP_HOUR_SIN` 0.058,
+`AVAILABLE_SLACK` 0.057, `ORIGIN` 0.044, `OP_UNIQUE_CARRIER` 0.042. Rotation structure
+dominates, which is the §3.2 conclusion restated.
+
+## P4. Per-carrier precision@1%, 32-feature production model
+
+| Carrier | Test flights | Per day | Top-1% n | Precision | Base rate | Lift |
+|---|---|---|---|---|---|---|
+| DL | 35,041 | 2,695 | 350 | 0.951 | 0.154 | 6.18 |
+| OO | 30,044 | 2,311 | 300 | 0.880 | 0.186 | 4.73 |
+| G4 | 4,702 | 362 | 47 | 0.809 | 0.122 | 6.62 |
+| WN | 42,169 | 3,244 | 421 | 0.800 | 0.159 | 5.04 |
+| NK | 6,842 | 526 | 68 | 0.794 | 0.176 | 4.52 |
+| AS | 7,814 | 601 | 78 | 0.782 | 0.190 | 4.12 |
+| HA | 2,603 | 200 | 26 | 0.577 | 0.102 | 5.67 |
+| UA | 25,103 | 1,931 | 251 | 0.534 | 0.150 | 3.57 |
+| AA | 28,920 | 2,225 | 289 | 0.533 | 0.159 | 3.36 |
+| B6 | 6,982 | 537 | 69 | 0.493 | 0.161 | 3.07 |
+| YX | 10,715 | 824 | 107 | 0.458 | 0.122 | 3.75 |
+| F9 | 5,440 | 418 | 54 | 0.426 | 0.188 | 2.26 |
+| OH | 6,912 | 532 | 69 | 0.391 | 0.137 | 2.86 |
+| MQ | 9,814 | 755 | 98 | 0.276 | 0.090 | 3.07 |
+
+| Aggregate | Old (40 feat) | New (32 feat) | Delta |
+|---|---|---|---|
+| Global precision@1% | 0.781 | 0.781 | 0.000 |
+| Mean per-carrier | 0.614 | **0.622** | **+0.007** |
+| **Weighted by volume** | 0.681 | **0.696** | **+0.015** |
+
+## P5. Step 2 — downstream dependency check: NONE
+
+| Artifact | `ENC_*` occurrences | Verdict |
+|---|---|---|
+| `PROP_FEATURES` (notebook 3, 27 features) | 0 | no dependency |
+| `results/layer4/config.json` (`features`, `cat_cols`) | 0 | no dependency |
+| `fdpis_3_propagation.ipynb` | 0 | no dependency |
+| `fdpis_4_multihop.ipynb` | 0 | no dependency |
+| `fdpis_5_integration.ipynb` | 2 | **markdown prose only**, no code |
+| `encodings.json` referenced outside notebook 2 | none | no dependency |
+
+Layer 4 consumes an **observed** delay, not a Layer 3 prediction, and builds its own
+feature list. Notebooks 3–5 required no code changes.
+
+## P6. Notebooks 3, 4, 5 — rerun, figures unchanged
+
+| Notebook | Runtime | Result | Errors | Sequential |
+|---|---|---|---|---|
+| `fdpis_3_propagation.ipynb` | 239 s | PASS | 0 | yes |
+| `fdpis_4_multihop.ipynb` | 18 s | PASS | 0 | yes |
+| `fdpis_5_integration.ipynb` | 29 s | PASS | 0 | yes |
+
+Notebook 3 — identical: gate AUC **0.9272**, precision **0.785**, recall **0.842**;
+final MAE **7.67** all candidates / **8.35** actual cascades; interval coverage **70.2%**;
+threshold **0.3** selected on validation; category levels 14/339/339.
+
+Notebook 4 — identical depth table:
+
+| Depth | n | MAE cascades | Corr | Coverage |
+|---|---|---|---|---|
+| 1 | 21,999 | 8.67 | 0.790 | 0.770 |
+| 2 | 9,945 | 29.34 | 0.560 | 0.536 |
+| 3 | 3,810 | 40.89 | 0.433 | 0.476 |
+| 4 | 1,243 | 48.79 | 0.318 | 0.444 |
+| 5 | 328 | 62.52 | 0.262 | 0.497 |
+
+Notebook 5 — identical: total-delay MAE **20.87 / 31.88 / 35.15 / 38.66 / 39.91**,
+correlation **0.674 / 0.428 / 0.327 / 0.233 / 0.226**.
+
+Every downstream figure matches the pre-change run exactly, confirming the Layer 3 and
+Layer 4 feature sets are genuinely independent.
+
+## P7. Files and cells removed
+
+**Deleted file:** `results/encodings.json` — 407,225 bytes, 13,116 entries. No longer a
+deployment artifact.
+
+**Cells removed from `fdpis_2_modelling.ipynb` (43 → 35 cells):**
+
+| # | Type | First line |
+|---|---|---|
+| 1 | markdown | `## 4b — Persist the target encodings (Fix 1)` |
+| 2 | code | `# ===== FIX 1: persist the target encodings so the model can…` |
+| 3 | code | `# ===== FIX 1 verification: the JSON round trip must be numerically exact` |
+| 4 | markdown | `## 15 — Check B: is feature group D earning its place? (diagnostic)` |
+| 5 | code | `# ===== CHECK B: is feature group D (the ENC_* encodings) earning its place?` |
+| 6 | code | `# ===== B3/B4: comparison table, deltas and verdict =====` |
+| 7 | code | `# ===== B5: what does the 32-feature model rely on without the encodings?` |
+| 8 | markdown | `## 16 — Blend without encodings (diagnostic)` |
+| 9 | code | `# ===== BLEND WITHOUT ENCODINGS - diagnostic only =====` |
+| 10 | code | `# ===== Comparison against the production blend, plus the verdict =====` |
+| 11 | code | `# ===== Per-carrier precision@1% for the 32-feature blend =====` |
+
+The six diagnostic cells plus two headings were removed after the production change made
+them self-referential — `FEATS_NO_ENC` resolved to `ALL_FEATURES`, so they compared the
+32-feature set against itself and printed a row labelled "Blend WITH encodings | 32".
+Their evidence is permanently recorded above under **CHECKS A AND B** and
+**BLEND WITHOUT ENCODINGS**.
+
+**Cell added:** a production confirmation cell after the model save, asserting the blend
+metrics against expectation within ±0.002.
+
+**Runtime effect:** notebook 2 now runs in **414 s (6m 54s)**, down from **748 s
+(12m 28s)** with the diagnostics — **45% faster**, five fewer models trained per run.
+
+Verified still present and correct: the encoding computation cell, the six-row ablation,
+the seven-way model comparison, the per-carrier analysis, and the production save path.
+
+## P8. Documentation items needing update
+
+| # | Location | Old | New |
+|---|---|---|---|
+| 1 | Model / feature-set description | 40 features across 6 groups | **32 features across 5 groups** |
+| 2 | Headline AUC | 0.6819 | **0.6924** |
+| 3 | Headline F1 | 0.351 | **0.360** |
+| 4 | PR-AUC | 0.3267 | **0.3339** |
+| 5 | Precision / recall at 0.5 | 0.252 / 0.580 | **0.260 / 0.585** |
+| 6 | p@5% | 0.459 | **0.458** |
+| 7 | p@10% | 0.374 | **0.380** |
+| 8 | Weighted per-carrier p@1% | 0.681 | **0.696** |
+| 9 | Mean per-carrier p@1% | 0.614 | **0.622** |
+| 10 | Top feature importances | ENC_ROUTE 0.186, ENC_ORIGIN_HOUR 0.140 | **LEG_FRACTION 0.162, LEG_NUM 0.109** |
+| 11 | Model comparison table (7 rows) | 40-feature figures | **32-feature figures, §P3** |
+| 12 | Saved model size | 7,389,886 bytes | **5,467,472 bytes** |
+| 13 | Serving requirements | model + `encodings.json` + unseen-key fallback | **model only** |
+| 14 | `fdpis_5_integration.ipynb` markdown, cell 3 | see below | see below |
+
+**Unchanged and safe to keep as published:** global precision@1% **0.781**, lift **5.0×**,
+base delay rate **0.156**, the entire §3.2 ablation table, all Layer 4 / Layer 5 figures,
+and the cascade-detection validation (0.894 / 0.668 / 0.765).
+
+### Item 14 — stale prose in `fdpis_5_integration.ipynb`, markdown cell 3
+
+Not edited, per instruction. The Layer 5 integration logic it describes is unaffected;
+only the sentence's supporting claim is now wrong. Current text:
+
+> This uses the same signal that dominated Layer 3's feature importance — `ENC_ROUTE` at
+> 18.6% and `ENC_ORIGIN_HOUR` at 14.0%, together a third of the model — without needing
+> to rebuild…
+
+`ENC_ROUTE` and `ENC_ORIGIN_HOUR` are no longer in the Layer 3 model at all. Suggested
+replacement preserving the argument:
+
+> This uses the same route- and hour-level delay signal that Layer 3 relies on. In the
+> current 32-feature model that signal arrives through the raw categoricals `ORIGIN`
+> (4.4%) and `OP_UNIQUE_CARRIER` (4.2%) alongside the rotation features that dominate it
+> — `LEG_FRACTION` at 16.2% and `LEG_NUM` at 10.9% — rather than through the target
+> encodings, which were removed from production after four independent tests showed they
+> subtracted from AUC. The empirical lookup below is built directly from training data,
+> so it needs no fitted encoding state either way.
+
+Also worth a look when that cell is revised: the surrounding paragraph argues the
+empirical primary-delay lookup avoids "rebuilding" the encodings. That argument is now
+stronger, not weaker — there are no encodings to rebuild.
+
+## P9. What this changes operationally
+
+The production model is now **32 schedule- and rotation-derived features with no fitted
+lookup state**. Serving needs the model artifact alone: no `encodings.json` to version or
+refresh, no unseen-key fallback, no `global_rate` default path, and no training/serving
+skew risk from stale target encodings as the route network changes. The model is 26%
+smaller and XGBoost early-stops at iteration 68 rather than 125.
+
+The headline the project sells on — precision@1% of 0.781 at 5.0× lift — is unchanged.
+Everything else moved in the right direction.
