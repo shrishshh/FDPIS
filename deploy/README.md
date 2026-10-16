@@ -64,7 +64,10 @@ committed, with explicit `.gitignore` exceptions. Render therefore builds
 straight from the public GitHub repo. The full `data/` and `results/` are never
 committed.
 
-The service is `fdpis-api`:
+**Live backend:** https://fdpis-api.onrender.com (for example `/api/health`;
+OpenAPI docs at `/docs`).
+
+The service is `fdpis-api` (`srv-db95v28473hc73b56v3g`):
 - web service, Docker runtime, Free plan, Singapore region;
 - repo `shrishshh/FDPIS`, branch `main`, Dockerfile `deploy/backend/Dockerfile`,
   build context `.` (repo root);
@@ -76,9 +79,23 @@ To redeploy, push to `main`; auto-deploy rebuilds the image. To change
 `ALLOWED_ORIGINS`, use the dashboard (Environment) or the Render API
 (`PUT /v1/services/{id}/env-vars`, then `POST /v1/services/{id}/deploys`).
 
+Measured on the live service (2026-10-16):
+- **Build and deploy:** the first build took 73 s and the first deploy went live in 114 s.
+- **Parity:** the live API against the local slim container on all 13 dates gave
+  318 comparisons, 0 different, 0 transport retries (`deploy/parity_live.txt`).
+- **Memory:** Render reported a peak of 278 MB on the instance, measured while
+  it served the whole parity sweep.
+- **Restart:** a forced restart (`POST /v1/services/{id}/restart`) is
+  zero-downtime. Render brings the new instance up before draining the old one,
+  and `/api/health` never stopped answering.
+- **Cold start:** after 18 minutes idle (spun down), the first request took
+  **42.7 s**. Requests after that answer in 0.2–0.4 s.
+- **Latency:** an uncached day feed takes 25 s (FAA) and 43 s (DGCA) on the
+  free CPU. After that the 32-entry feed cache answers instantly.
+
 Rule changes (`api/layer5/rules/*.json`) and code changes need a rebuild.
 Model or data changes also need `python deploy/build_space.py`. If the xgboost
-version changes, the `test` stage must pass before deploying.
+version changes, the test image (`Dockerfile.test`) must pass before deploying.
 
 ### Updating artifacts
 
@@ -126,7 +143,7 @@ version changes, the `test` stage must pass before deploying.
 
 Render free sleeps after 15 minutes without traffic. The first request then
 waits for the container to start and load the models: about 3 s locally, and
-usually 30–60 s on Render, including the wake-up. `lib/api/client.ts` handles this:
+42.7 s measured on Render, including the wake-up. `lib/api/client.ts` handles this:
 - Until the server has answered once, a request that fails at the network
   level, gets a 502/503/504, or takes longer than 5 s switches the app to a
   "waking" state.

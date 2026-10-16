@@ -1,0 +1,13 @@
+... 25/318
+... 50/318
+... 75/318
+... 100/318
+... 125/318
+... 150/318
+... 175/318
+... 200/318
+... 225/318
+... 250/318
+... 275/318
+... 300/318
+RESULT: 318 comparisons over 13 date(s): 273 byte-identical, 45 equal within 1e-6 (volatile ids only), 0 different; 0 transport retries

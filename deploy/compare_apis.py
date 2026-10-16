@@ -8,18 +8,37 @@ numerically (abs tol 1e-6) and every differing path is listed.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import sys
+import time
+import urllib.error
 import urllib.request
 
 
-def fetch(base: str, path: str, body=None):
-    req = urllib.request.Request(base + path, method="POST" if body is not None else "GET",
-                                 data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Content-Type": "application/json",
-                                          "User-Agent": "fdpis-compare"})
-    with urllib.request.urlopen(req, timeout=300) as r:
-        return r.read()
+RETRIES: list[str] = []
+
+
+def fetch(base: str, path: str, body=None, attempts: int = 3):
+    """GET/POST and return the body. A transport failure (connection reset, a
+    truncated chunked body, a timeout) is retried up to `attempts` times and
+    recorded in RETRIES; HTTP errors are not retried."""
+    for i in range(attempts):
+        req = urllib.request.Request(base + path, method="POST" if body is not None else "GET",
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "fdpis-compare"})
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                return r.read()
+        except urllib.error.HTTPError:
+            raise
+        except (http.client.HTTPException, OSError) as e:
+            RETRIES.append(f"{base}{path}: {type(e).__name__}")
+            print(f"RETRY {i + 1}/{attempts} {base}{path}: {type(e).__name__}", flush=True)
+            if i == attempts - 1:
+                raise
+            time.sleep(5)
 
 
 def diff(a, b, path="$", out=None, tol=1e-6):
@@ -120,12 +139,15 @@ def main(a: str, b: str, dates: list[str] | None = None, served_subset: bool = F
                                                "arrival_delay": 150, "profile": "faa_part117"}),
                      ("/api/recommendations", {"tail": t, "date": d, "leg_num": 1,
                                                "departure_delay": 90, "profile": "dgca_fdtl"})]
-    for p, body in jobs:
+    for n, (p, body) in enumerate(jobs, 1):
         counts[_check(a, b, p, body, verbose)[0]] += 1
+        if n % 25 == 0:
+            print(f"... {n}/{len(jobs)}", flush=True)
     total = sum(counts.values())
     print(f"RESULT: {total} comparisons over {len(dates)} date(s): "
           f"{counts['identical']} byte-identical, {counts['equal']} equal within 1e-6 "
-          f"(volatile ids only), {counts['different']} different")
+          f"(volatile ids only), {counts['different']} different; "
+          f"{len(RETRIES)} transport retr{'y' if len(RETRIES) == 1 else 'ies'}")
     return counts["different"]
 
 
