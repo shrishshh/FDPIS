@@ -2741,3 +2741,1466 @@ smaller and XGBoost early-stops at iteration 68 rather than 125.
 
 The headline the project sells on — precision@1% of 0.781 at 5.0× lift — is unchanged.
 Everything else moved in the right direction.
+
+---
+
+# WEATHER INTEGRATION
+
+Run 2026-10-16 in the new notebook `fdpis_7_weather.ipynb`. **This is not a production
+change.** `fdpis_2_modelling.ipynb` and every production artifact in `results/` and `api/` are
+untouched (all `results/` files still dated 2026-09-13). The Variant B model is saved as a
+candidate in `results/candidates/weather_b/`.
+
+The question was whether historical airport weather improves the Layer 3 primary-delay model.
+There were two variants, because training on actual departure-hour weather is perfect hindsight:
+
+- **Variant A, weather at departure.** The origin observation at the scheduled departure hour
+  and the destination observation at the scheduled arrival hour. This is an **upper bound**
+  (equivalent to a perfect forecast) and cannot be deployed.
+- **Variant B, weather 3 h before departure.** The latest observation at or before
+  `floor(scheduled departure) − 3 h`, at both the origin and the destination. It is keyed on
+  the UTC instant, because "3 h before departure" is a single moment even when the two airports
+  are in different zones. This is the **honest number**. The notebook asserts that every
+  observation used is at least 3 h before departure: minimum lead 3:00, median 3:34, at both
+  ends.
+
+**Verdict: Variant B does not help.** AUC changes by **−0.0014** and p@1% by **−0.022**. It fails
+the promotion rule, so the recommendation is to keep it as a documented experiment.
+
+## W1. Stations
+
+| | Count |
+|---|---|
+| Unique ORIGIN ∪ DEST in `processed.parquet` | **345** |
+| Returned data | **345** |
+| Missing | **0** |
+| Observations (routine + special METAR, 2025-01-01 → 2025-08-01) | 2,213,510 (median 6,256 per station) |
+
+Source: IEM ASOS archive, one request per station, 1.5 s between requests. Each response is
+cached to `data/weather/raw/{IATA}.csv`, with the IEM ID that worked in `{IATA}.meta` and the
+summary in `data/weather/station_manifest.csv`.
+
+42 stations returned nothing under their IATA code and were fetched under the ICAO code from
+`airportsdata`. These fall into three groups:
+
+- Alaska, Hawaii and the territories, which IEM indexes by ICAO: ANC→PANC, HNL→PHNL, GUM→PGUM,
+  SJU→TJSJ, PPG→NSTU and others.
+- Airports whose FAA identifier differs from their IATA code: AZA→KIWA, CLD→KCRQ, FCA→KGPI,
+  GUF→KJKA, HHH→KHXD, MQT→KSAW, SCE→KUNV, USA→KJQF, YUM→KNYL.
+- **PBI→KDJT.** Palm Beach International has been re-designated. Both `airportsdata` (whose
+  lat/lon matches West Palm Beach) and IEM now key the same ASOS station as DJT/KDJT, and PBI
+  and KPBI both return no data. It is the correct physical station.
+
+Data-quality note: the raw archive contains a few implausible values (max wind 189 kt, max gust
+231 kt). They were left in. Tree models split on them, but they are too rare to move the
+metrics.
+
+## W2. Timezone verification
+
+METAR timestamps are UTC and BTS schedules are local. Every observation was converted with the
+`airportsdata` IANA zone before joining. The table shows one instant (the first observation at
+or after 2025-07-15 18:00 UTC):
+
+| Station | Zone | UTC | Local | Offset |
+|---|---|---|---|---|
+| ATL | America/New_York | 2025-07-15 18:52 | 2025-07-15 14:52 | −4 h |
+| ORD | America/Chicago | 2025-07-15 18:51 | 2025-07-15 13:51 | −5 h |
+| DEN | America/Denver | 2025-07-15 18:35 | 2025-07-15 12:35 | −6 h |
+| PHX | America/Phoenix | 2025-07-15 18:51 | 2025-07-15 11:51 | −7 h (no DST) |
+| LAX | America/Los_Angeles | 2025-07-15 18:53 | 2025-07-15 11:53 | −7 h |
+| HNL | Pacific/Honolulu | 2025-07-15 18:53 | 2025-07-15 08:53 | −10 h |
+
+DST check: ATL in January is −5 h (EST). All offsets are asserted in the notebook.
+
+## W3. Missing-data rates
+
+These are the percentages of all 1,718,426 flights with no value after a forward-fill of up to
+2 h within each station. NaN beyond that is left for the trees.
+
+| | Variant A | Variant B |
+|---|---|---|
+| Origin, no weather row | 0.27% | 0.15% |
+| Destination, no weather row | 0.42% | 0.14% |
+| Worst single feature | 0.43% (DEST visibility/wind/temp/ceiling) | 0.17% (ORIG visibility/wind/temp) |
+
+The per-feature table is in `data/weather/missing_rates.csv`. Coverage is effectively complete
+for both variants.
+
+Feature definitions:
+
+- Visibility is capped at 10 mi.
+- Gust is 0 when not reported.
+- A trace of precipitation is recorded as 0.0001 in.
+- Ceiling is the lowest BKN, OVC or **VV** layer, or 10,000 ft if there is none, capped at
+  10,000. VV (vertical visibility) is how METAR reports an indefinite ceiling in fog, and the
+  FAA counts it as a ceiling.
+- TS, SN and FG are matched as substrings of the present-weather codes, so `TSRA` and `VCTS`
+  count as TS.
+- IFR means visibility < 3 mi or ceiling < 1,000 ft.
+
+## W4. Sanity check against `WEATHER_DELAY`: **PASS**
+
+The sample is 388,746 flights with cause codes: 29,050 with `WEATHER_DELAY > 0` and 359,696 with
+`WEATHER_DELAY = 0`. It uses Variant A origin weather.
+
+| Feature | WEATHER_DELAY > 0 | WEATHER_DELAY = 0 | Ratio |
+|---|---|---|---|
+| ORIG_WX_IS_IFR | 0.1384 | 0.0559 | **2.48×** |
+| ORIG_WX_IS_THUNDER | 0.2100 | 0.0199 | **10.54×** |
+| ORIG_WX_VISIBILITY (mi) | 8.39 | 9.42 | 0.89× |
+| ORIG_WX_CEILING_FT | 6,877 | 8,100 | 0.85× |
+| ORIG_WX_PRECIP_IN | 0.0330 | 0.0041 | 7.97× |
+
+All three required directions hold: weather-delayed flights have more IFR, more thunder and lower
+visibility.
+
+As a second check, the origin join key was shifted by −8 to +8 hours. A timezone bug would put
+the peak 4–10 h away from zero. The thunder separation peaks at exactly **0 h** (10.54×), falls
+to 6.7× at −1 h and 6.5× at +2 h, and is down to about 3× at ±4–5 h.
+
+**The join is aligned correctly.**
+
+## W5. Comparison: baseline vs A vs B
+
+Test split: 223,101 flights, 2025-07-19 → 2025-07-31. Setup identical to notebook 2: same 32
+features, same date split, scale_pos_weight 7.88, XGBoost + HistGradientBoosting + LightGBM soft
+vote, random_state 42. The baseline reproduced production **exactly** (AUC 0.6924, p@1% 0.781)
+before any weather model ran.
+
+| Config | AUC | PR-AUC | F1 | p@0.5% | p@1% | p@5% | p@10% | Carrier-wtd p@1% |
+|---|---|---|---|---|---|---|---|---|
+| Baseline (32 production) | 0.6924 | 0.3339 | 0.360 | 0.891 | 0.781 | 0.458 | 0.380 | 0.696 |
+| + Weather A (upper bound) | 0.7002 | 0.3478 | 0.366 | 0.874 | 0.804 | 0.486 | 0.395 | 0.741 |
+| + Weather B (honest) | 0.6910 | 0.3274 | 0.355 | 0.876 | 0.759 | 0.445 | 0.369 | 0.692 |
+| **Δ A** | **+0.0078** | +0.0139 | +0.006 | −0.017 | **+0.023** | +0.028 | +0.015 | +0.045 |
+| **Δ B** | **−0.0014** | −0.0065 | −0.005 | −0.015 | **−0.022** | −0.013 | −0.011 | −0.004 |
+
+F1 is at a 0.5 threshold. B's F1 fell even though recall rose from 0.585 to 0.657, because
+precision fell from 0.260 to 0.243.
+
+## W6. The value of a perfect forecast
+
+**A − B = +0.0092 AUC, +0.045 p@1%, +0.049 carrier-weighted p@1%.**
+
+Stated plainly:
+
+- Knowing the actual weather at departure would lift the model by nearly a point of AUC and
+  4.5 points of top-1% precision.
+- Knowing only the weather 3 hours earlier gives **none** of that. It is slightly worse than no
+  weather at all.
+- The weather signal that matters for primary delay is the weather **at the time of the
+  operation**, and a 3-hour-old observation is not a usable proxy for it.
+- A real **forecast** product (TAF, or convective outlooks such as the FAA CCFP/TCF) is the only
+  route to capturing part of that gap. It would need its own historical archive to train on,
+  which this experiment did not have.
+
+## W7. Variant B: importances and ablation
+
+XGBoost component, same importance measure as notebook 2. Top 15:
+
+| Rank | Feature | Importance | Weather? |
+|---|---|---|---|
+| 1 | LEG_FRACTION | 0.0858 | |
+| 2 | LEG_NUM | 0.0797 | |
+| 3 | DEP_HOUR_SIN | 0.0510 | |
+| 4 | SCHEDULED_BUFFER_MIN | 0.0449 | |
+| 5 | AVAILABLE_SLACK | 0.0447 | |
+| 6 | ORIG_WX_PRECIP_IN | 0.0433 | ✓ |
+| 7 | DEST_WX_PRECIP_IN | 0.0397 | ✓ |
+| 8 | ORIGIN | 0.0257 | |
+| 9 | ORIG_WX_IS_THUNDER | 0.0245 | ✓ |
+| 10 | DEST_WX_IS_IFR | 0.0242 | ✓ |
+| 11 | DEST_WX_IS_THUNDER | 0.0239 | ✓ |
+| 12 | DEST_WX_IS_SNOW | 0.0235 | ✓ |
+| 13 | TAIL_LEGS_TODAY | 0.0233 | |
+| 14 | OP_UNIQUE_CARRIER | 0.0224 | |
+| 15 | DEP_HOUR | 0.0222 | |
+
+Six of the top 15 are weather features, and weather takes **35.7%** of total importance. **High
+importance alongside zero test gain** means the trees split on weather to fit the training
+period (January snow, April and early-July storms) in ways that do not carry over to late July.
+Importance shows that the model used a feature, not that the feature helped.
+
+Ablation (Variant B):
+
+| Config | AUC | Δ AUC | p@1% | Δ p@1% |
+|---|---|---|---|---|
+| Baseline | 0.6924 | — | 0.781 | — |
+| Origin weather only | 0.6916 | −0.0008 | 0.771 | −0.010 |
+| Destination weather only | 0.6881 | −0.0043 | 0.761 | −0.020 |
+| Both | 0.6910 | −0.0014 | 0.759 | −0.022 |
+
+Origin weather is roughly neutral. Destination weather 3 h before departure is the larger drag,
+which makes sense: it predates the arrival it is meant to describe by the flight time plus 3 h.
+
+**By season:** the test split spans only July (07-19 → 07-31), so AUC by month cannot be
+computed. As the closest substitute, the test set was segmented by the weather the honest model
+could see:
+
+| Segment (Variant B conditions) | Flights | Delay rate | AUC baseline | AUC B | Δ |
+|---|---|---|---|---|---|
+| All test flights | 223,101 | 0.156 | 0.6924 | 0.6910 | −0.0014 |
+| Origin thunder 3 h before | 2,373 | 0.319 | 0.6873 | 0.6924 | +0.0051 |
+| Origin IFR 3 h before | 6,048 | 0.153 | 0.7064 | 0.7097 | +0.0033 |
+| Origin precip > 0 3 h before | 9,826 | 0.232 | 0.7030 | 0.7099 | +0.0069 |
+| Destination thunder 3 h before | 2,554 | 0.279 | 0.6774 | 0.6800 | +0.0027 |
+| No adverse weather at either end | 198,889 | 0.151 | 0.6895 | 0.6852 | −0.0043 |
+
+Weather helps a little on the roughly 4–5% of flights where adverse weather is already visible 3
+hours out. It costs more on the 89% where it is not, so overall the net is negative. The
+segments are small, so the positive deltas are suggestive, not established.
+
+## W8. Recommendation: **keep as a documented experiment. Do not promote.**
+
+Rule: promote if B improves AUC by ≥ 0.005 **and** does not reduce p@1% by more than 0.01.
+
+- Δ AUC = **−0.0014**, against a requirement of ≥ +0.005. **Fails.**
+- Δ p@1% = **−0.022**, against a limit of ≥ −0.010. **Fails.**
+
+Variant B fails both conditions. The candidate remains in `results/candidates/weather_b/`:
+
+- `xgb.json`, `hgb.joblib` and `lgbm.txt` (the three blend components)
+- `config.json` (ordered feature names, category levels, weather definition, metrics)
+- `comparison.csv`, `ablation_origin_dest.csv`, `feature_importance.csv` and
+  `weather_segments.csv`
+
+A reload of the saved components reproduces the in-memory blend exactly (max diff 0.0).
+
+The production limitation "No weather features are integrated"
+(`api/performance_data.py`) is now better stated as: *"Weather was tested. Observations available
+3 h before departure did not improve the model (AUC −0.0014). A perfect forecast would be worth
++0.009 AUC and +4.5 points of p@1%, so a forecast product is the open lever."* That wording
+change has **not** been made.
+
+Possible follow-ups if weather is revisited:
+
+1. Archived TAF forecasts valid at the departure hour. This is the deployable version of
+   Variant A.
+2. A shorter lead time, such as 1 h, if the briefing can run later.
+3. Weather features restricted to a "storm present" gate rather than continuous values, given
+   that the segment table shows gains only in adverse conditions.
+
+## W9. API changes needed for promotion
+
+Not applicable, because promotion is not recommended. No API file was changed.
+
+For the record, serving any weather model would also need something the API does not have at
+all: a **live METAR/TAF ingestion feed**. The API currently serves historical flights from the
+training parquet only.
+
+## Files created
+
+- `fdpis_7_weather.ipynb`: new notebook, fully executed.
+- `data/weather/`:
+  - `raw/{IATA}.csv` and `.meta` (345 stations)
+  - `station_manifest.csv`
+  - `missing_rates.csv`
+  - `weather_features.parquet` (1,718,426 rows; keys `FL_DATE, OP_UNIQUE_CARRIER,
+    OP_CARRIER_FL_NUM, ORIGIN, DEST`; 20 features × suffix `_A`/`_B`)
+- `results/candidates/weather_b/`: the candidate, as listed in W8.
+- Package added to the `fdpis` conda env: `airportsdata`.
+
+---
+
+# LAYER 5 AND CREW ALERTS
+
+Built 2026-10-16. Layer 5 (the recommendation engine) is now a backend service in
+`api/layer5/`, and it replaces the client-side TypeScript rules. The old rules came from
+planning documents, were never checked against a regulation, and applied DGCA-style
+thresholds to US data.
+
+**Layers 3 and 4 are unchanged.** `api/propagation.py`, `models.py`, `features.py` and
+`config.py` were not modified, and `api/test_parity.py` still passes (see L5.5).
+
+| Component | File | Purpose |
+|---|---|---|
+| Rule profiles | `api/layer5/rules/faa_part117.json`, `dgca_fdtl.json` | Every threshold, with citation and `verified` flag |
+| Engine | `api/layer5/engine.py` | Loads a profile, evaluates rules, assigns alert ids |
+| Crew proxy | `api/layer5/crew.py` | Duty projection, FDP / rest limits, action deadlines |
+| Day feed | `api/layer5/feed.py` | Batched propagation for every aircraft of a day |
+| Outbox | `api/layer5/notify.py` | **Simulated** crew notifications |
+| Time zones | `api/layer5/tz.py` | Converts local BTS times to UTC (via `airportsdata`) |
+| Tests | `api/layer5/test_rules.py` | 24 tests, stdlib `unittest` |
+
+New endpoints:
+
+- `GET /api/rules`
+- `POST /api/recommendations`
+- `GET /api/alerts`
+- `POST /api/alerts/{id}/notify`
+- `GET /api/notifications`
+
+New and changed frontend pieces:
+
+- **New page:** `/alerts`, added to the nav.
+- **Rewritten:** `RecommendationPanel` now calls `POST /api/recommendations`, has an FAA/DGCA
+  switcher and shows the disclosure banner.
+- **Updated:** the /performance page has a weather section.
+
+## L5.1 Rules implemented
+
+How sources were obtained:
+
+- **US text.** The eCFR website redirects automated clients to a block page, so the US text
+  came from the official **eCFR versioner API**. That API returns the same regulatory text
+  (14 CFR, up to date as of 2026-10-13).
+- **DGCA text.** Fetched from the official dgca.gov.in digigov portal.
+- **Rev 2 of the DGCA FDTL CAR.** This was only available as a third-party mirror. A text diff
+  against the official Rev 1 shows the only substantive change is para 2.2 (it drops the
+  01 June 2024 deadline). Every numeric limit below is identical in both versions and is cited
+  from the official Rev 1.
+
+**Every rule below was read in primary text: `verified: true`.**
+
+### FAA profile (`faa_part117`)
+
+| Rule id | Threshold | Comparator | Source |
+|---|---|---|---|
+| `crew_fdp_limit` | Table B, encoded as the full table: 10 report-time rows × 1–7+ segments, 9 h to 14 h (e.g. 0700–1159 → 14/14/13/13/12.5/12/11.5 h) | FDP > limit | 14 CFR 117.13(a) and Table B to Part 117 |
+| `crew_fdp_extension_limit` | Table B + 120 min | FDP > limit + 2 h | 14 CFR 117.19(a)(1) |
+| `crew_flight_time_limit` | Table A: 8 h (report 0000–0459 and 2000–2359), 9 h (0500–1959) | block > limit | 14 CFR 117.11(a)(1) and Table A |
+| `crew_min_rest` | 600 min | rest < 10 h | 14 CFR 117.25(e) |
+| `pax_dot_significant_delay` | 180 min arrival delay | ≥ 3 h | 14 CFR 260.2, "Significantly delayed or changed flight" (2) |
+
+### DGCA profile (`dgca_fdtl`)
+
+| Rule id | Threshold | Comparator | Source |
+|---|---|---|---|
+| `crew_fdp_limit` | 1–2 landings 13:00; 3 → 12:30; 4 → 12:00; 5 → 11:30; 6 → 11:00; >6 not permitted. Night duty (encroaching 00:00–06:00): 10:00 with at most 2 landings | FDP > limit, or landings > cap | CAR 7-J-III Rev 1, para 6.1 (6.1.1, 6.1.2, 6.1.4), Notes 1–2, para 3.11 |
+| `crew_fdp_extension_limit` | limit + 120 min | > | para 16.1(b) |
+| `crew_duty_period_limit` | FDP limit + 60 min (duty includes the post-flight allowance) | > | para 6.2 |
+| `crew_flight_time_limit` | 9 h (≤2 landings), 8 h (3–6 landings or night) | block > limit | para 6.1.1, 6.1.2, 6.1.4 |
+| `crew_min_rest` | max(12 h, preceding duty) | rest < | para 10.1(a), (b)(i) |
+| `pax_meals_refreshments` | 2 h (block ≤ 2.5 h), 3 h (2.5–5 h), 4 h (> 5 h) departure delay | ≥ | CAR 3-M-IV Rev 4, para 3.4.1, 3.8.1(a) |
+| `pax_alternate_or_refund` | 360 min | > 6 h | CAR 3-M-IV Rev 4, para 3.4.2 |
+| `pax_hotel_accommodation` | 1440 min, or 360 min if the scheduled departure is 20:00–03:00 | > | CAR 3-M-IV Rev 4, para 3.4.3, 3.8.1(b) |
+
+**Comparators follow the regulation's wording.**
+
+- "will exceed" and "more than" are strict (`gt`). An FDP exactly at the Table B limit is
+  legal, and a delay of exactly 6 h does not trigger 3.4.2.
+- "X or more" is inclusive (`gte`): DOT's "three or more hours" and DGCA's "2 hours or more".
+
+**Proxy parameters (assumptions, not rules).**
+
+| Parameter | Value | What the regulation says |
+|---|---|---|
+| Report buffer | 60 min | **Verified that neither regime fixes it.** 14 CFR 117.3 defines report time as "the time that the certificate holder requires". DGCA para 3.14 and 4.1.1 leave it to the operator's approved Scheme. |
+| Post-flight buffer | 15 min | DGCA para 4.1.2 requires an allowance but leaves its length to the operator. |
+| Standby call-out lead time | 90 min | Not regulatory: a carrier reserve-scheme value. It is the **only `verified: false` item** in either profile, and the UI names it. |
+
+## L5.2 Rules searched for but not found, or not encoded
+
+| Item | Outcome |
+|---|---|
+| DGCA FDTL revisions after Rev 2 (the 2025 phased implementation dates, operator-specific exemptions) | **Not found in primary text.** Only news and blog sources describe them, and they disagree with each other on the night-landing change. Not encoded. Under Rev 2 para 2.2, operators may stay on Issue III (2019) until DGCA approves their new scheme, so which scheme a given airline flies under cannot be known from public data. |
+| US federal requirement for meals or hotels during gate delays | Not found in the text reviewed (14 CFR 259.4, Part 260). Part 259 was not reviewed in full. Nothing encoded. |
+| 14 CFR 259.4 tarmac-delay rules (3 h deplaning, food and water by 2 h) | Found and verified, but **not applicable**: the model predicts gate departure delay, not time on the tarmac. |
+| Cumulative limits (117.23; DGCA para 8), weekly rest (117.25(b); DGCA 10.6), consecutive nights (DGCA 13), extension caps over 28 days (DGCA 16.1(d)) | Verified in text but **not encodable**: they need individual crew history. |
+| DGCA WOCL reduction (Note 2 to para 7) | Not encoded. The note cites para 6.1.3 and 7.1 (night beyond the acclimatized zone, and augmented crews), and neither applies to domestic two-pilot days. |
+| Split duty (117.15; DGCA 9), augmented crews (117.17 / Table C; DGCA 7), reserve (117.21) | Not observable from schedule data. |
+
+## L5.3 The crew proxy as implemented
+
+Airlines do not publish rosters, so `crew.py` projects a **hypothetical** crew. Every alert, API
+response and UI surface states this, using the required wording. Assumptions:
+
+1. One crew stays with one aircraft for its whole operating day (`TAIL_NUM` × `FL_DATE`).
+2. Report time = first leg's scheduled departure − 60 min (configurable per profile).
+3. The FDP ends at the last leg's **predicted block-in**.
+   - Under 14 CFR 117.3 the FDP "ends when the aircraft is parked". The post-flight buffer
+     (15 min) is therefore **not** added to the FDP compared with Table B.
+   - The buffer is added to the duty end, which drives rest (117.25(e)) and the DGCA
+     para 6.2 duty-period limit.
+4. All times are converted to UTC through each airport's IANA time zone before any duration is
+   taken. Scheduled block-in = departure + `CRS_ELAPSED_TIME`. This avoids the `CRS_ARR_TIME`
+   rollover artifacts the audit found in 1.76% of rows. A test confirms that an ATL→DEN→LAX
+   day is measured in elapsed time, not by subtracting local clock times.
+5. Predicted delays come from Layer 4:
+   - A hop's departure delay is `total_delay` (median) or `interval_high` (upper bound).
+   - Its arrival delay is that value × the recovery rate (0.895), the same step
+     `propagation.traverse` uses to seed the next hop.
+6. The crew is acclimated to the first departure airport's zone, so the 117.13(b) −30 min does
+   not apply.
+7. The Table B row is chosen from the report time in that zone, and the column from the number
+   of scheduled segments. DGCA night duty is tested on the **projected** duty window, so a delay
+   that pushes duty past midnight changes the limit itself.
+8. **`proxy_not_applicable` is a refusal, not an alert.** It applies when the *scheduled* day
+   already breaks a single-crew limit (FDP, landings or flight time). In that case the operator
+   must swap crews mid-day, the proxy cannot see where, and no alert is raised.
+9. **`breached_at_seed`.** If a limit is already crossed on the seed leg (the leg whose delay
+   was observed), that is history, not a prediction. No alert is raised.
+10. Rest uses the same aircraft's first report on the next date, when that date is in the
+    dataset. If even the **scheduled** overnight is below minimum rest, the next morning must
+    be a different crew, so the rest rule is skipped.
+11. **Action deadline (FDP and duty rules).** It is the predicted departure of the first leg
+    whose projected block-in crosses the limit, minus the 90-min call-out. It is shown in local
+    time at that leg's origin, where the standby crew reports.
+12. **Action deadline (rest rule).** It is the next report time minus the call-out.
+13. **Confidence boundary.** If the day's last leg is past depth 2, it has no number, so crew
+    rules can only return MONITOR. They do so only when the deepest *quantified* upstream delay
+    would cross the limit, and the MONITOR alert carries no predicted value.
+
+Feed seeding (`GET /api/alerts`): each aircraft is seeded at its first leg with recorded arrival
+delay ≥ 15 min (notebook 5's cascade-origin rule) and propagated from there. Aircraft with no
+such leg are projected on schedule.
+
+**Performance.** `propagation.traverse` costs about 200 ms per call because it filters the
+1.7M-row frame, so a 2,350-chain day would take about 8 minutes. `feed.traverse_many` runs the
+same per-hop computation for every seed of a day at once, reusing `predict_hop` and
+`expected_primary` unchanged. A full day now takes **3.4 s (FAA) / 4.9 s (DGCA)**.
+
+## L5.4 Tests: 24 of 24 pass
+
+```
+conda run -n fdpis python -m unittest api.layer5.test_rules -v
+Ran 24 tests in 20.7s
+OK
+```
+
+Coverage against the brief:
+
+| Required case | How it is tested |
+|---|---|
+| Just below threshold → no alert | Every passenger rule in both profiles, at threshold − 0.01 min |
+| Exactly at threshold → alert | Every passenger rule. `gte` rules alert **at** the threshold. `gt` rules ("more than", "will exceed") correctly do **not**, and alert at +0.01 min. Crew FDP tested both ways: FDP = limit is legal, limit + 0.01 alerts. |
+| Median below, upper bound above → POSSIBLE | Every passenger rule, and crew FDP in both profiles |
+| Depth 3+ → MONITOR only | Every passenger rule at depths 3, 4, 5. Nothing is raised with no upstream trigger, and only MONITOR (with no value) when one exists. Crew rules with an unquantified last leg. A sweep of 4 delay sizes × 2 profiles asserts that no LIKELY or POSSIBLE appears past depth 2. |
+| Crew proxy, duty clearly fine | 8 h day, small delays → status `ok`, no alerts (both profiles) |
+| 90-min delay on leg 2 pushes the last leg over the FDP limit | Schedule 60 min under the limit (FAA 13 h, DGCA 12 h). The 90-min delay gives LIKELY `crew_fdp_limit` at exactly limit + 30 min; breach leg 4; correct deadline; no extension alert. |
+
+The extra tests cover:
+
+- Table B coverage of every minute of the day, and spot values against the CFR.
+- The DGCA by-landings and night-duty limits.
+- A delay into night lowering the DGCA limit from 13 h to 10 h.
+- FAA and DGCA rest thresholds.
+- Skipping the rest rule when the overnight is already too short.
+- `proxy_not_applicable` and `breached_at_seed`.
+- Profile path traversal.
+- **Batch parity:** `traverse_many` equals `propagation.traverse` exactly on every hop field
+  (40 random seeds on 2025-07-25).
+
+## L5.5 Verification
+
+| # | Check | Result |
+|---|---|---|
+| 1 | `/api/rules` returns both profiles with sources | **PASS.** FAA has 5 rules, DGCA 8. Every rule has a URL and `verified: true`. `unverified.assumptions = [standby_callout_minutes]` for both. |
+| 2 | `POST /api/recommendations` is consistent with the propagation numbers | **PASS.** 5 at-risk aircraft were taken from the feed and rerun as single chains. The feed value, the recommendation value, and an independent recomputation (scheduled FDP + last hop `total_delay` × 0.8952) agree to 0.1 min in every case (e.g. N8714Q: 729.0 / 729.0 / 729.0 against a 720 limit). |
+| 3 | /alerts renders a real day's alerts | **PASS.** Production build served by `next start` and rendered in headless Chrome: 2025-07-31 shows 4,887 aircraft, 64 crews flagged, 39 LIKELY / 21 POSSIBLE / 12 MONITOR, disclosure banner present, MONITOR rows show "no number". The cascade page panel was also rendered with backend alerts (N8714Q). |
+| 4 | Switching profile changes the alerts | **PASS.** 2025-07-25: FAA flags 104 crews (84 L / 16 P / 22 M), DGCA flags 64 (58 / 18 / 18). The DGCA profile adds the para 6.2 duty-period and 3-M-IV passenger rules. |
+| 5 | Depth 3+ never produces LIKELY or POSSIBLE | **PASS.** 536 alerts checked: 3 days × 2 profiles of full feeds, plus 60 random high-delay chains × 2 profiles. 42 alerts sat on depth-3+ legs; all 42 were MONITOR with no number. **0 violations.** |
+| 6 | The old client-side threshold logic is gone | **PASS.** `grep -E 'TRIGGERS\|thresholdMin:\|leadTimeMin\|buildRecommendations\|minusMinutes\|triggeredAtHop'` over `fdpis-web/{lib,components,app}` finds only `thresholdMin`, the field that carries the backend's `threshold_minutes` into the UI. No rule, trigger or lead time remains in the browser. |
+| 7 | `api/test_parity.py` still passes | **PASS.** Layer 3 max diff 0.0, Layer 4 max diff 0.004968 min (tolerance 0.01), constants match. |
+
+Additions verified:
+
+- **Notification outbox.**
+  - `POST /api/alerts/{id}/notify` writes a record with `status: "SIMULATED — not sent"`, a role
+    as the recipient and the specified message format. Example: *"Standby crew SLC: report by
+    11:01 local. Projected FDP exceedance on N8714Q leg 3 (SLC-HOU) under FAA Part 117. Ref
+    alert #98."*
+  - Rest alerts address *"Operating crew, tail …"* via crew app push.
+  - An unknown id returns 404. A passenger alert returns 422, because only crew alerts notify
+    crew.
+  - The UI enables **Notify crew** only after **Acknowledge**, and the Outbox tab is headed
+    "SIMULATED OUTBOX".
+- **Weather limitation.**
+  - `api/performance_data.py` now carries the new limitation text.
+  - A `weather` block is read directly from `results/candidates/weather_b/comparison.csv`, not
+    copied, so it cannot drift from the experiment.
+  - /performance shows the three-row comparison, with Variant A labelled "upper bound — not
+    deployable".
+- **Frontend checks.** `tsc --noEmit` and `next build` are clean.
+
+## L5.6 Sample day: 2025-07-25 (4,908 aircraft; 3,240 have a leg arriving 15+ min late)
+
+| | FAA Part 117 | DGCA FDTL |
+|---|---|---|
+| **Crews flagged** | **104** | **64** |
+| LIKELY / POSSIBLE / MONITOR | 84 / 16 / 22 | 58 / 18 / 18 |
+| FDP limit (L / P / M) | 33 / 6 / 15 | 23 / 7 / 10 |
+| FDP + max extension, i.e. crew change mandatory (L / P / M) | 5 / 4 / 1 | 5 / 1 / 1 |
+| Duty-period limit (DGCA only) (L / P / M) | — | 8 / 8 / 5 |
+| Minimum rest before next day (L / P / M) | 46 / 6 / 6 | 22 / 2 / 2 |
+| Rotations `proxy_not_applicable` | 4,003 (82%) | 4,206 (86%) |
+| Rotations `breached_at_seed` | 25 | 29 |
+| Rotations within limits | 776 | 609 |
+
+Median FDP exceedance for an FDP alert: 25 min.
+
+**The headline finding is the 82–86%, not the 104.** On most US aircraft-days the *scheduled*
+day (for example N700UW: 8 legs, 20 h from report to block-in, against a 9 h Table B limit)
+already exceeds what one crew may legally fly. So the airline necessarily swaps crews mid-day,
+and the one-crew-per-aircraft proxy says nothing about those days. The engine refuses rather
+than guesses.
+
+The alerts it does raise come from shorter rotations (2–5 legs), where one crew plausibly
+operates the whole day. Even there, real crews often swap. **Real roster data is the single
+change that would turn this from a risk indicator into an operational tool.**
+
+## L5.7 What surprised me, and what I had to interpret
+
+1. **The FAA FDP depends on report time, not just duty length.** Table B ranges from 9 h
+   (report 00:00–03:59) to 14 h (07:00–11:59), and drops by up to 2.5 h with segment count. A
+   single "crew duty limit" number would have been wrong for most of the day.
+2. **The DGCA limit depends on landings and on night duty, and a delay can change the limit
+   itself.** Any duty touching 00:00–06:00 is capped at 10 h and 2 landings. So a late evening
+   delay can turn a legal 13 h, 2-landing day into a 10 h day that is already over.
+3. **Neither regime fixes the report buffer.** It is carrier-defined in both (117.3; DGCA 3.14
+   and 4.1.1), so the 60 min is an assumption and is labelled as one. DGCA does *require* a
+   post-flight allowance (4.1.2) but leaves its length to the operator.
+4. **"Exceed" vs "or more".** Part 117 and the DGCA delay paragraphs mostly say "exceed" or
+   "more than" (strict), but DGCA meals and DOT 260 say "or more" (inclusive). The brief's
+   "exactly at threshold → alert" test is implemented per rule: it alerts at the threshold only
+   where the regulation is inclusive.
+5. **DGCA para 6.1.3 is not a domestic rule.** The table row (10 h flight time, 13:00, 1
+   landing) applies, per Note 1, only to night duty beyond the acclimatized zone. Domestic
+   single-landing days use 6.1.2.
+6. **DGCA para 16 Note 1 is ambiguous.** It reads "Provisions of only para 8.1 to 8.4 can be
+   extended by the limits specified in 16.1(a) and 16.1(b)", and para 8 is the *cumulative*
+   table. Read literally, that would restrict what 16.1 can extend. I followed 16.1's plain
+   wording (the "FDP may be extended by maximum of 02 hours") and flagged the ambiguity in the
+   rule notes.
+7. **The DGCA meal threshold's "2 ½ hrs".** The ½ glyph does not survive PDF text extraction.
+   2.5 h is read from the visible structure ("up to 2 [glyph] hrs ... more than 2 [glyph] hrs
+   and up to 5 hours").
+8. **The DGCA FDP table is scrambled by layout-mode text extraction.** It had to be read in PDF
+   content-stream order. That was the only way to pair each FDP value with its landing count
+   unambiguously.
+9. **Passenger facilitation is a DGCA concept with no US federal equivalent for gate delays.**
+   The closest US rule is DOT's refund entitlement for a ≥ 3 h arrival delay (14 CFR 260.2). It
+   is DOT, not FAA, and is included and labelled as such.
+10. **Not modelled.** Operators can delay crew report time when a delay is known in advance.
+    The proxy reports at the scheduled time, so very large early delays look like FDP breaches
+    the airline would avoid by rescheduling the report. The `breached_at_seed` status absorbs
+    the most extreme of these.
+
+## Files
+
+New:
+
+- `api/layer5/`: `__init__.py`, `engine.py`, `crew.py`, `feed.py`, `notify.py`, `tz.py`,
+  `test_rules.py`, `rules/faa_part117.json`, `rules/dgca_fdtl.json`
+- `fdpis-web/app/alerts/page.tsx`
+- `fdpis-web/components/alerts/AlertsConsole.tsx`
+- `fdpis-web/components/rules/RuleUi.tsx`
+
+Modified:
+
+- `api/main.py` (5 endpoints), `api/schemas.py` (Layer 5 models), `api/performance_data.py`
+  (weather limitation and block), `api/requirements.txt` (+`airportsdata`), `api/README.md`
+- `fdpis-web/lib/api/recommendations.ts` (rewritten as an API client),
+  `lib/api/cascade.ts` / `index.ts` / `performance.ts`, `lib/types.ts`
+- `components/cascade/RecommendationPanel.tsx` (rewritten), `CascadeExplorer.tsx`,
+  `live/LiveConsole.tsx`, `Nav.tsx`, `app/performance/page.tsx`
+
+Not modified: `api/propagation.py`, `models.py`, `features.py`, `config.py`, every notebook, and
+every artifact in `results/`.
+
+---
+
+# LAYER 5 BACKTEST
+
+Run 2026-10-16. Script: `api/layer5/backtest.py` (`conda run -n fdpis python -m api.layer5.backtest`,
+279 s). All outputs are in `results/layer5/`.
+
+**Dates: test split only, 2025-07-19 → 2025-07-31 (13 dates).** Layer 4 was trained on dates
+≤ 2025-07-04, and its gate threshold was chosen on validation (2025-07-05 → 07-18).
+Backtesting on training dates would be leakage. Nothing in this section was tuned on the test
+dates.
+
+**What "actual breach" means.** BTS records what the *aircraft* did, not what any crew did. An
+"actual breach" therefore means the proxy crew's *actual* FDP (or duty, or rest) crossed the
+limit. It does **not** mean a real crew went illegal: a real airline may well have swapped
+crews. This backtest measures whether the engine predicts the quantity it claims to predict.
+It cannot validate the crew proxy itself.
+
+**How the backtest scores against the engine.**
+
+- **Same code path.** It is built on `feed.evaluate_day`, the same function behind
+  `GET /api/alerts`. It therefore scores exactly the alerts the API serves.
+- **Mirror check.** An independent mirror of the engine's severity logic is checked against
+  the engine on every rule-day. Result: **0 mismatches**.
+  - The first run found 2 mismatches. Both were DGCA days where the engine tests the
+    seed-leg crossing against the limit of whichever scenario fires. Night duty makes that
+    limit differ between the median and the upper scenario.
+  - The mirror was fixed to match the engine, and the full run repeated.
+
+**Actual-outcome definitions.**
+
+- Report time = first scheduled departure − 60 min, the same as the proxy.
+- Actual block-in = the last leg's scheduled departure (UTC, via `api/layer5/tz.py`) +
+  `CRS_ELAPSED_TIME` + `ARR_DELAY`. `ARR_TIME` clock values are not used.
+- Limits are re-selected from the actual duty window: the Table B row, and DGCA night duty and
+  landings.
+- Rest = the next day's scheduled report time − (actual block-in + 15 min).
+
+**Exclusions.** Three groups of rule-days are kept out of the scoring.
+
+- **Seed-leg crossings.** These rule-days are excluded from *every* method's table, because
+  the limit was already crossed on the observed seed leg (hindsight). Counts: FAA 266,
+  DGCA 275.
+- **Cancellations.** Joined from `data/cancelled.parquet` on tail + date. A crew with a leg
+  cancelled after the seed goes to **CANCELLED_DOWNSTREAM**. That is 801 FAA / 570 DGCA
+  applicable aircraft-days. 547 of the 4,905 test-split cancellations (11.2%) have no tail
+  number and cannot be joined.
+- **Unknown outcome.** The last leg diverted, so there is no `ARR_DELAY`.
+
+**Hindsight already in the inputs.** Notebook 1 removes cancelled legs before it assigns
+`LEG_NUM`, so every rotation the engine sees has already been told which legs flew. This
+favours the engine slightly and cannot be undone without rebuilding notebook 1.
+
+**Coverage, single-crew model, all test dates.**
+
+| Profile | Aircraft-days | Applicable (`ok` + `at_risk`) | With a seed | `breached_at_seed` | `proxy_not_applicable` |
+|---|---|---|---|---|---|
+| FAA | 63,102 | 11,974 | 5,211 | 294 | 50,834 (81%) |
+| DGCA | 63,102 | 9,628 | 3,916 | 232 | 53,242 (84%) |
+
+## LB1. Part 1: alerts vs recorded outcomes
+
+Single-crew model, all 13 test dates, per rule. Rows are engine severity; columns are the
+actual outcome.
+
+### FAA Part 117
+
+| Rule | Severity | Actual breach | Actual no breach | Cancelled downstream | Unknown |
+|---|---|---|---|---|---|
+| **FDP limit** | LIKELY | 177 | 33 | 30 | 1 |
+| | POSSIBLE | 45 | 73 | 13 | 1 |
+| | MONITOR | 56 | 67 | 5 | 0 |
+| | No alert | 195 | 10,247 | 723 | 141 |
+| **FDP + max extension** | LIKELY | 22 | 2 | 8 | 0 |
+| | POSSIBLE | 13 | 10 | 2 | 0 |
+| | MONITOR | 4 | 4 | 0 | 0 |
+| | No alert | 116 | 10,778 | 773 | 143 |
+| **Minimum rest** | LIKELY | 358 | 18 | 41 | 0 |
+| | POSSIBLE | 15 | 27 | 4 | 1 |
+| | MONITOR | 20 | 19 | 1 | 0 |
+| | No alert | 101 | 4,650 | 389 | 85 |
+
+### DGCA FDTL
+
+| Rule | Severity | Actual breach | Actual no breach | Cancelled downstream | Unknown |
+|---|---|---|---|---|---|
+| **FDP limit** | LIKELY | 173 | 29 | 11 | 3 |
+| | POSSIBLE | 37 | 55 | 6 | 0 |
+| | MONITOR | 39 | 31 | 2 | 0 |
+| | No alert | 136 | 8,346 | 536 | 111 |
+| **FDP + max extension** | LIKELY | 36 | 3 | 4 | 0 |
+| | POSSIBLE | 8 | 12 | 1 | 0 |
+| | MONITOR | 6 | 6 | 0 | 0 |
+| | No alert | 77 | 8,737 | 555 | 114 |
+| **Duty-period limit** | LIKELY | 80 | 8 | 7 | 0 |
+| | POSSIBLE | 32 | 35 | 6 | 0 |
+| | MONITOR | 18 | 11 | 1 | 0 |
+| | No alert | 117 | 8,561 | 545 | 114 |
+| **Minimum rest** | LIKELY | 202 | 12 | 27 | 1 |
+| | POSSIBLE | 12 | 9 | 0 | 0 |
+| | MONITOR | 8 | 6 | 0 | 0 |
+| | No alert | 37 | 3,134 | 244 | 63 |
+
+### Headline metrics
+
+Precision excludes cancelled-downstream and unknown outcomes. Recall is the share of actual
+breaches (among applicable rule-days) that received any alert.
+
+| Profile | Rule | LIKELY precision | LIKELY + POSSIBLE precision | Recall (any alert) | Recall (LIKELY) | Base rate |
+|---|---|---|---|---|---|---|
+| FAA | FDP limit | **0.843** | 0.677 | 0.588 | 0.374 | 0.043 |
+| FAA | FDP + extension | 0.917 | 0.745 | 0.252 | 0.142 | 0.014 |
+| FAA | Minimum rest | **0.952** | 0.892 | 0.796 | 0.725 | 0.095 |
+| DGCA | FDP limit | **0.856** | 0.714 | 0.647 | 0.449 | 0.044 |
+| DGCA | FDP + extension | 0.923 | 0.746 | 0.394 | 0.283 | 0.014 |
+| DGCA | Duty period | 0.909 | 0.723 | 0.526 | 0.324 | 0.028 |
+| DGCA | Minimum rest | **0.944** | 0.911 | 0.857 | 0.780 | 0.076 |
+
+### Base-rate comparison: the naive rule
+
+The naive rule alerts whenever scheduled FDP + seed arrival delay > limit: the seed delay is
+carried to the last leg with no absorption and no model. It was scored on the same rows. On
+its own it reaches higher recall at lower precision. For example, FAA FDP limit: precision
+0.562, recall 0.619; the engine's LIKELY + POSSIBLE reaches 0.677 at 0.588. That is not equal
+recall, so `naive_comparison.csv` matches recall in both directions on identical rows. These
+rows are applicable, seeded, outcome known, not cancelled, and have an engine number for the
+last leg.
+
+| Profile | Rule | Engine L+P precision @ its recall | Naive precision @ the same recall | Naive precision @ its own recall | Engine precision @ that recall | Average precision, engine / naive |
+|---|---|---|---|---|---|---|
+| FAA | FDP limit | **0.677** @ 0.590 | 0.610 | 0.580 @ 0.638 | 0.505 | **0.673** / 0.533 |
+| FAA | FDP + ext. | **0.745** @ 0.273 | 0.432 | 0.449 @ 0.375 | 0.390 | **0.383** / 0.269 |
+| FAA | Min. rest | **0.892** @ 0.840 | 0.865 | 0.858 @ 0.860 | 0.789 | **0.923** / 0.863 |
+| DGCA | FDP limit | **0.714** @ 0.636 | 0.662 | 0.622 @ 0.694 | 0.492 | **0.643** / 0.594 |
+| DGCA | FDP + ext. | **0.746** @ 0.396 | 0.449 | 0.438 @ 0.505 | 0.262 | **0.437** / 0.307 |
+| DGCA | Duty period | **0.723** @ 0.523 | 0.605 | 0.558 @ 0.603 | 0.392 | **0.600** / 0.468 |
+| DGCA | Min. rest | **0.911** @ 0.870 | 0.873 | 0.867 @ 0.898 | 0.792 | **0.939** / 0.886 |
+
+Stated plainly:
+
+- **At the engine's deployed operating point, the model-based alerts beat the naive rule on
+  all 7 rules.** The naive rule tuned to the same recall is 3–31 points less precise, and the
+  engine's average precision is higher for every rule.
+- **But the curves cross.** If you need the naive rule's higher recall, the naive rule is the
+  better instrument on **all 7 rules**. The engine's median projection under-predicts a tail
+  of breaches where the delay did not get absorbed. To catch those, it would have to alert on
+  many more rule-days than the naive rule needs.
+- **Layers 3–4 therefore add precision at moderate recall. They do not add recall.** They do
+  not "add nothing", but the gain is narrower than the headline precision suggests: 2.6–7
+  points of precision at the deployed point for FDP and rest, and more for the extension and
+  duty rules.
+
+### Cancellation test
+
+Downstream-cancellation rate on applicable seeded days, flagged (any crew alert) vs unflagged,
+stratified by seed arrival delay.
+
+| Profile | Seed delay | Flagged: days / cancelled / rate | Unflagged: days / cancelled / rate |
+|---|---|---|---|
+| FAA | 15–60 min | 319 / 31 / **9.7%** | 2,723 / 203 / 7.5% |
+| FAA | 60–120 min | 190 / 10 / 5.3% | 905 / 52 / 5.7% |
+| FAA | 120+ min | 428 / 48 / **11.2%** | 646 / 28 / 4.3% |
+| DGCA | 15–60 min | 209 / 15 / 7.2% | 2,025 / 134 / 6.6% |
+| DGCA | 60–120 min | 129 / 9 / 7.0% | 743 / 38 / 5.1% |
+| DGCA | 120+ min | 315 / 23 / 7.3% | 495 / 24 / 4.8% |
+
+- Flagged days are cancelled downstream more often in 5 of 6 strata. The clearest case is FAA
+  120+: 11.2% vs 4.3%, 2.6×, among days with the same seed-delay band.
+- The counts are small (tens of cancellations per cell) and no significance test was run. The
+  60–120 min FAA band shows no difference.
+- **Read this as weak, consistent support** for the claim that flagged crews are the ones
+  airlines end up cancelling around, not as proof.
+
+## LB2. Part 2: lead time
+
+For each alert, `usable_lead_min` = action deadline − the seed leg's **actual** arrival (both
+UTC). The actual arrival is the moment the ≥ 15 min delay that triggers the chain becomes
+known. Single-crew model, all test dates.
+
+| Profile | Rule | Alerts | Min | p10 | Median | p90 | Lead ≤ 0 |
+|---|---|---|---|---|---|---|---|
+| FAA | FDP limit | 501 | −287 | −43 | 97 | 310 | **204 (41%)** |
+| FAA | FDP + extension | 65 | −337 | −72 | −27 | 155 | **45 (69%)** |
+| FAA | Minimum rest | 504 | −773 | 266 | 508 | 923 | 28 (6%) |
+| FAA | **All crew rules** | 1,070 | −773 | −42 | **270** | 724 | **277 (26%)** |
+| DGCA | FDP limit | 386 | −82 | −44 | 60 | 270 | **167 (43%)** |
+| DGCA | FDP + extension | 76 | −287 | −53 | −23 | 191 | **47 (62%)** |
+| DGCA | Duty period | 198 | −82 | −45 | −2 | 259 | **100 (51%)** |
+| DGCA | Minimum rest | 277 | −245 | 205 | 617 | 958 | 21 (8%) |
+| DGCA | **All crew rules** | 937 | −287 | −44 | **131** | 675 | **335 (36%)** |
+
+**Why FDP alerts are late.** Across 4 test dates (FAA), 63 of the 64 FDP-limit alerts whose
+deadline had passed break on the **very next leg after the seed** (depth 1). By the time the
+seed's arrival delay is known, that next leg is already within the 90-min standby call-out
+window.
+
+**Engine change: `deadline_passed` status.**
+
+- Every alert now carries `usable_lead_minutes` and `status` (`actionable` or
+  `deadline_passed`).
+- `POST /api/alerts/{id}/notify` returns **422** for a `deadline_passed` alert, with the reason.
+- `/alerts` still shows these rows. It replaces the buttons with "Deadline had passed when this
+  fired (N min late)", and the recommendations panel says the same.
+- Three unit tests were added (`DeadlinePassed`): lead-time arithmetic, the flag itself, and
+  the notify refusal. Live check: notifying a passed alert returned 422 (lead −11.3 min); an
+  actionable alert returned "SIMULATED — not sent".
+
+### Actionable precision and recall
+
+Counting only alerts whose deadline was still ahead when they fired:
+
+| Profile | Rule | Actual breaches | LIKELY alerts → actionable | LIKELY precision (actionable) | Recall, actionable LIKELY+POSSIBLE | Recall, any actionable alert |
+|---|---|---|---|---|---|---|
+| FAA | FDP limit | 473 | 210 → **71** | 0.775 | **0.169** | 0.285 |
+| FAA | FDP + extension | 155 | 24 → 2 | 1.000 | 0.039 | 0.058 |
+| FAA | Minimum rest | 494 | 376 → 349 | 0.948 | **0.700** | 0.741 |
+| DGCA | FDP limit | 385 | 202 → **77** | 0.714 | **0.192** | 0.291 |
+| DGCA | FDP + extension | 127 | 39 → 5 | 0.800 | 0.063 | 0.110 |
+| DGCA | Duty period | 247 | 88 → 19 | 0.737 | 0.130 | 0.202 |
+| DGCA | Minimum rest | 259 | 214 → 194 | 0.938 | **0.749** | 0.780 |
+
+## LB3. Part 3: is the severity label honest?
+
+Observed breach rate inside each severity bucket (`severity_calibration.csv`):
+
+| Profile | Rule | LIKELY | POSSIBLE | MONITOR | No alert |
+|---|---|---|---|---|---|
+| FAA | FDP limit | **0.843** | 0.381 | 0.455 | 0.019 |
+| FAA | FDP + extension | **0.917** | 0.565 | 0.500 | 0.011 |
+| FAA | Minimum rest | **0.952** | 0.357 | 0.513 | 0.021 |
+| DGCA | FDP limit | **0.856** | 0.402 | 0.557 | 0.016 |
+| DGCA | FDP + extension | **0.923** | 0.400 | 0.500 | 0.009 |
+| DGCA | Duty period | **0.909** | 0.478 | 0.621 | 0.013 |
+| DGCA | Minimum rest | **0.944** | 0.571 | 0.571 | 0.012 |
+
+**LIKELY precision is ≥ 0.84 for every rule, above the 0.70 bar, so no recalibration is
+required.** Two things are still wrong with the labels:
+
+1. **MONITOR beats POSSIBLE in 5 of 7 rules.**
+   - MONITOR fires only when a large *quantified* upstream delay is still in the chain past
+     depth 2.
+   - POSSIBLE fires when only the interval's upper bound crosses, and the upper bound
+     (`hi + full primary`) is wide.
+   - So "MONITOR" undersells real risk, and "POSSIBLE" oversells it.
+2. **"LIKELY" is right, but the rule behind it is not what it claims.** The median crossing
+   should breach about half the time. It breaches 84–95% of the time, because the
+   interval/median is computed on departure delay while duty breaches come from the delay that
+   persists.
+
+**The proposed recalibration was computed anyway, for information, and was not applied.** It
+has no tunable threshold, so nothing was chosen on test or validation dates. The proposal:
+
+- LIKELY only if the interval **lower** bound crosses;
+- median-only → POSSIBLE;
+- upper-only → MONITOR.
+
+| Profile | Rule | LIKELY: deployed → proposed precision (breaches) | POSSIBLE: deployed → proposed |
+|---|---|---|---|
+| FAA | FDP limit | 0.843 (177) → **0.982 (111)** | 0.381 → 0.680 |
+| FAA | Minimum rest | 0.952 (358) → 0.985 (332) | 0.357 → 0.667 |
+| DGCA | FDP limit | 0.856 (173) → **0.945 (104)** | 0.402 → 0.750 |
+| DGCA | Duty period | 0.909 (80) → 0.962 (50) | 0.478 → 0.833 |
+
+The proposal makes every label more honest: LIKELY ~95–98%, POSSIBLE ~67–83%, MONITOR
+~42–55%. The cost is that LIKELY recall falls by about a third (FAA FDP 0.374 → 0.235). That is
+a product choice about what "LIKELY" should promise. Because the deployed LIKELY already
+clears 0.70, it is left as is.
+
+## LB4. Part 4: inferred duty blocks (experimental, off by default)
+
+Implemented as `crew_model = "single" | "inferred_blocks"` (default `single`).
+
+- **Where it's exposed.** It is a query parameter on `GET /api/alerts`, and a "Crew model"
+  selector on /alerts labelled experimental.
+- **How days are split.**
+  - `crew.infer_blocks` splits each aircraft-day into the minimum number of blocks that are
+    legal on schedule under the active profile.
+  - Splits are only allowed at ground stops of ≥ 30 min, at airports in the carrier's top-10
+    origins by departures on the **training** dates.
+  - Tie-break: the smallest spread (max − min) of block scheduled FDPs, then the earliest
+    splits.
+  - Each block gets its own report time and is evaluated as a crew.
+- **Not evaluated for blocks.** The rest rule: there is no basis for pairing a block with
+  tomorrow.
+- **Labelling.** Every alert carries
+  `duty_block.label = "inferred duty block — hypothetical, not a roster"`. The feed has
+  `crew_model_label`, and the UI shows a banner plus "block i/n · inferred" on each row.
+- **Tests.** Two unit tests: a legal split exists at a base, and no split exists without one.
+
+### Coverage
+
+| Profile | Date | Coverage: single | Coverage: inferred | Crews evaluated: single / inferred | Alerts (L / P / M): single | Alerts (L / P / M): inferred |
+|---|---|---|---|---|---|---|
+| FAA | 07-21 | 15.9% | **84.7%** | 778 / 8,065 | 37 / 8 / 15 | 52 / 45 / 50 |
+| FAA | 07-25 | 18.4% | **84.4%** | 905 / 7,903 | 84 / 16 / 22 | 114 / 57 / 46 |
+| FAA | 07-30 | 20.4% | **86.0%** | 979 / 7,708 | 43 / 12 / 8 | 42 / 32 / 26 |
+| DGCA | 07-21 | 12.4% | **79.9%** | 605 / 8,852 | 49 / 8 / 5 | 121 / 64 / 104 |
+| DGCA | 07-25 | 14.3% | **79.9%** | 702 / 8,690 | 58 / 18 / 18 | 248 / 115 / 106 |
+| DGCA | 07-30 | 16.5% | **81.9%** | 790 / 8,459 | 41 / 20 / 10 | 109 / 71 / 69 |
+
+### Backtest on the same 3 dates
+
+| Profile | Rule | Model | LIKELY precision | L+P precision | Recall (any) | Actual breaches | Naive precision / recall |
+|---|---|---|---|---|---|---|---|
+| FAA | FDP limit | single | 0.804 | 0.699 | 0.619 | 105 | — |
+| FAA | FDP limit | inferred | 0.798 | 0.617 | 0.519 | 455 | 0.491 / 0.565 |
+| DGCA | FDP limit | single | 0.792 | 0.667 | 0.648 | 88 | — |
+| DGCA | FDP limit | inferred | 0.814 | 0.650 | 0.507 | 720 | 0.544 / 0.629 |
+| DGCA | Duty period | inferred | 0.942 | 0.742 | 0.472 | 400 | 0.534 / 0.512 |
+| DGCA | FDP + extension | inferred | 0.958 | 0.826 | 0.368 | 193 | 0.477 / 0.435 |
+
+**What this shows.**
+
+- Inferred blocks raise coverage from 12–20% to 80–86% of aircraft-days.
+- They keep LIKELY precision at the single-crew level (~0.80).
+- They see 4–8× more actual breaches. Recall is somewhat lower, because there are more blocks
+  whose breach leg is past the confidence boundary.
+
+**What it does not show.** **The split points are invented.** Nothing in public data says
+where any airline changed crews, so the blocks cannot be validated against rosters. The
+backtest only shows that, *if* crews changed at those points, the engine would predict their
+duty outcomes about as well as it does for single-crew days. That is the only real evidence
+here.
+
+## LB5. Part 5: rest-rule credibility
+
+| Profile | Rest: LIKELY precision | Base rate | Naive precision @ its recall | Engine L+P @ same recall vs naive | Actionable recall | Median lead |
+|---|---|---|---|---|---|---|
+| FAA | **0.952** | 0.095 | 0.858 @ 0.860 | 0.892 vs 0.865 @ 0.840 | 0.700 | 508 min |
+| DGCA | **0.944** | 0.076 | 0.867 @ 0.898 | 0.911 vs 0.873 @ 0.870 | 0.749 | 617 min |
+
+Measured against the base rate, the rest rule is the strongest rule in the engine: 10–12× the
+base rate, and better than naive at its operating point. It is also the **only rule with
+usable lead time**. By the decision rule given, it is **not downgraded**.
+
+The `max_severity` field that would downgrade a rule is implemented in the engine
+(`crew.project_duty` caps the severity and says so in the alert detail) but is **not set on any
+rule**.
+
+**Why its numbers are so good, and why that should not be over-read.**
+
+- It pairs today's last leg with the **same tail's** first report tomorrow, and the "actual
+  outcome" uses that same pairing.
+- So its precision measures how well the engine predicts *the aircraft's* evening finish
+  against *the aircraft's* morning start. That is mostly arithmetic on an already-tight
+  scheduled overnight.
+- **It says nothing about whether one crew actually flies both.** In US operations that is
+  uncommon, and nothing in public data can test it.
+- The high precision is real for the quantity measured. The relevance of that quantity to any
+  actual crew is the weakest assumption in Layer 5.
+
+## LB6. Files
+
+**Created.**
+
+- `api/layer5/backtest.py`
+- `results/layer5/` (new folder; nothing else in `results/` touched):
+  - Requested: `backtest_faa.csv`, `backtest_dgca.csv`, `lead_time.csv`,
+    `severity_calibration.csv`, `inferred_blocks_coverage.csv`
+  - Supporting: `backtest_summary.csv`, `naive_comparison.csv`, `actionable_metrics.csv`,
+    `lead_time_summary.csv`, `cancellation_test.csv`, `backtest_meta.csv`,
+    `backtest_records.parquet`
+
+**Changed (Python).**
+
+- `api/layer5/crew.py`:
+  - `usable_lead_min` and `deadline_passed` on alerts;
+  - an interval-lower scenario;
+  - `rest_evaluated`;
+  - the optional `max_severity` cap;
+  - `schedule_violations()`, factored out of `project_duty`;
+  - `infer_blocks()`.
+- `api/layer5/engine.py`:
+  - lower bound carried from hops;
+  - alert `status`, `usable_lead_minutes`, `crew_model`, `duty_block`;
+  - `carrier_bases()` and `evaluate_crews()`.
+- `api/layer5/feed.py`: `evaluate_day()` shared by the feed and the backtest; `crew_model`;
+  coverage and deadline-passed counts.
+- `api/layer5/notify.py`: refuses `deadline_passed`.
+- `api/layer5/test_rules.py`: 29 tests, up from 24 (adds `DeadlinePassed` ×3 and
+  `InferredBlocks` ×2).
+- `api/main.py`: `crew_model` query parameter, validated with a 422.
+- `api/schemas.py`: `DutyBlock`, plus the new `Alert` and `AlertFeed` fields.
+- `api/performance_data.py`: a `layer5` block read from the CSVs.
+
+**Changed (frontend).**
+
+- `fdpis-web/lib/types.ts`, `lib/api/recommendations.ts`, `lib/api/performance.ts`
+- `components/alerts/AlertsConsole.tsx`: crew-model selector, block labels, deadline-passed
+  rows, coverage tile.
+- `components/cascade/RecommendationPanel.tsx`: deadline-passed note.
+- `app/performance/page.tsx`: Layer 5 backtest card.
+
+**Not modified.** `api/propagation.py`, `models.py`, `features.py`, `config.py`, every
+notebook, and every file in `results/` outside `results/layer5/`.
+
+**Checks.**
+
+- `api/layer5/test_rules.py`: 29/29 pass.
+- `api/test_parity.py`: all three checks pass (Layer 3 diff 0.0, Layer 4 max diff 0.004968 min).
+- `tsc --noEmit` and `next build` are clean.
+- /alerts and /performance were rendered against the live API in headless Chrome.
+
+## LB7. Verdict
+
+**No, these alerts are not yet good enough to put in front of a crew scheduler. The single
+number that decides it is actionable recall on flight-duty breaches: 17% (FAA) and 19% (DGCA).**
+
+- When the engine says LIKELY, it is right 84–95% of the time, and it out-ranks a no-model
+  rule at its own operating point. Precision is not the problem.
+- The problem is timing. The alert only exists once the delayed seed leg has landed, and the
+  leg that breaks the duty limit is usually the very next one. 41% of FDP alerts (FAA) arrive
+  after the moment a standby crew would have needed calling.
+- So of every six actual FDP breaches, the engine gives a scheduler a usable warning for about
+  one.
+- The minimum-rest alerts are the exception: 95% precise, 70–75% actionable recall, around
+  8–10 hours of lead. But they rest on the least testable assumption in the system, that the
+  same crew flies the same aircraft tomorrow.
+- What would change the verdict is earlier information, not a better model: seeding on a known
+  *departure* delay or an upstream estimated time instead of a recorded arrival. That, plus
+  real roster data, would make this a scheduling tool rather than a risk indicator.
+
+---
+
+# LAYER 5 EARLY SEEDING
+
+Run 2026-10-16. Follows **LAYER 5 BACKTEST**, which found that 41–43% of FDP-limit alerts
+fired after their action deadline. The cause: the chain is seeded at the delayed leg's recorded
+*arrival*, and the leg that breaks the limit is usually the next one.
+
+**Outcome.**
+
+- **Departure seeding is now the default** (`feed.DEFAULT_SEED_ON = "departure"`). It doubles
+  actionable FDP recall with LIKELY precision ≥ 0.84 on every crew rule.
+- **The proposed severity reordering was not applied.** It was chosen on validation dates and
+  failed to hold on test.
+
+## ES1. Departure seeding
+
+**How it works.** `GET /api/alerts` gains `seed_on = "arrival" | "departure"` (422 on anything
+else). `feed.select_seeds` implements both modes:
+
+| | Arrival (previous default) | Departure (new default) |
+|---|---|---|
+| Seed leg | first leg with `ARR_DELAY` ≥ 15 | first leg with `DEP_DELAY` ≥ 15 |
+| Seed arrival delay fed to Layer 4 | recorded `ARR_DELAY` | **`DEP_DELAY` × 0.8952** (the recovery rate `propagation.traverse` applies between hops) |
+| Information time (lead measured from) | scheduled block-in + `ARR_DELAY` | **scheduled departure (UTC) + `DEP_DELAY`** |
+
+- **The seed leg's recorded `ARR_DELAY` is never read in departure mode.** A unit test
+  (`DepartureSeeding`) plants `ARR_DELAY = 999` and asserts:
+  - the seed is the first `DEP_DELAY` ≥ 15 leg;
+  - its inbound delay is 40 × 0.895;
+  - its information time is 11:00 EDT + 40 min = 15:40 UTC.
+- **Lead time.** `crew.project_duty` takes an explicit `info_time_utc`, and lead time is
+  measured from it. A test covers this.
+- **The naive rule is recomputed with the same departure seed**: scheduled FDP +
+  `DEP_DELAY` × 0.8952 > limit. Both methods see the same information.
+
+**Re-run.**
+
+- Test dates 2025-07-19 → 07-31, both profiles, both seed modes, run in 439 s.
+- Validation dates (07-05 → 07-18) were also run, in 312 s. Their records are used **only**
+  to choose ES2's threshold.
+- The engine/mirror check shows **0 mismatches** in all four runs.
+
+**Different seeds, different breach counts.** The breach counts differ between modes because
+seeding changes which aircraft-days are applicable. Departure seeding picks a different (often
+earlier) seed leg on some aircraft, so the seed-leg-crossing exclusions also change.
+
+### Test split: arrival vs departure seeding
+
+| Profile | Rule | Seed | Actual breaches | LIKELY precision | Recall (any alert) | **Actionable recall (L+P)** | **Deadline passed** | Lead p10 / median / p90 (min) |
+|---|---|---|---|---|---|---|---|---|
+| FAA | FDP limit | arrival | 473 | 0.843 | 0.588 | 0.169 | 41% | −43 / 97 / 310 |
+| FAA | FDP limit | **departure** | 540 | **0.849** | 0.467 | **0.376** | **0.7%** | 47 / 218 / 436 |
+| FAA | FDP + extension | arrival | 155 | 0.917 | 0.252 | 0.039 | 69% | −72 / −27 / 155 |
+| FAA | FDP + extension | **departure** | 162 | **0.882** | 0.142 | **0.130** | **6.7%** | 9 / 71 / 338 |
+| FAA | Minimum rest | arrival | 494 | 0.952 | 0.796 | 0.700 | 5.6% | 266 / 508 / 923 |
+| FAA | Minimum rest | **departure** | 484 | **0.906** | 0.707 | 0.647 | 3.1% | 367 / 644 / 1023 |
+| FAA | **All crew rules** | arrival | 1,122 | 0.913 | 0.633 | 0.385 | 26% | −42 / 270 / 724 |
+| FAA | **All crew rules** | **departure** | 1,186 | **0.885** | 0.520 | **0.453** | **2.1%** | 59 / 394 / 860 |
+| DGCA | FDP limit | arrival | 385 | 0.856 | 0.647 | 0.192 | 43% | −44 / 60 / 270 |
+| DGCA | FDP limit | **departure** | 427 | **0.840** | 0.492 | **0.412** | **0.9%** | 60 / 185 / 390 |
+| DGCA | FDP + extension | arrival | 127 | 0.923 | 0.394 | 0.063 | 62% | −53 / −23 / 191 |
+| DGCA | FDP + extension | **departure** | 136 | **0.857** | 0.279 | **0.235** | **3.4%** | 37 / 113 / 331 |
+| DGCA | Duty period | arrival | 247 | 0.909 | 0.526 | 0.130 | 51% | −45 / −2 / 259 |
+| DGCA | Duty period | **departure** | 262 | **0.885** | 0.397 | **0.336** | **3.7%** | 43 / 153 / 385 |
+| DGCA | Minimum rest | arrival | 259 | 0.944 | 0.857 | 0.749 | 7.6% | 205 / 617 / 958 |
+| DGCA | Minimum rest | **departure** | 254 | **0.929** | 0.744 | 0.681 | 4.1% | 242 / 755 / 1114 |
+| DGCA | **All crew rules** | arrival | 1,018 | 0.904 | 0.639 | 0.303 | 36% | −44 / 131 / 675 |
+| DGCA | **All crew rules** | **departure** | 1,079 | **0.884** | 0.501 | **0.435** | **2.6%** | 57 / 266 / 877 |
+
+**What departure seeding does.**
+
+- **The deadline-passed problem is essentially gone.** Late FDP alerts fall from 41–43% to
+  under 1%.
+- **Actionable recall for the duty-limit rules rises 2–3.5×:**
+  - FAA FDP limit 0.169 → 0.376.
+  - DGCA FDP limit 0.192 → 0.412.
+  - DGCA duty period 0.130 → 0.336.
+  - FDP + extension 0.039 → 0.130 (FAA) and 0.063 → 0.235 (DGCA).
+- **The cost is total recall and some rest-rule performance.**
+  - Recall counting *any* alert falls (FAA FDP 0.588 → 0.467). Many arrival-seeded alerts that
+    were "caught" were caught too late to use.
+  - The rest rule, which never had a timing problem, loses a little: actionable recall
+    0.700 → 0.647 (FAA). It now relies on an estimated rather than recorded seed arrival.
+- **LIKELY precision stays between 0.840 and 0.929 on every rule.**
+
+### Naive-rule comparison: departure seeding, both methods on the same seed
+
+| Profile | Rule | Engine L+P precision @ its recall | Naive @ same recall | Naive @ its own recall | Engine @ that recall | Avg. precision, engine / naive |
+|---|---|---|---|---|---|---|
+| FAA | FDP limit | **0.680** @ 0.49 | 0.636 | 0.596 @ 0.537 | **0.691** | **0.669** / 0.538 |
+| FAA | FDP + ext. | **0.733** @ 0.13 | 0.361 | 0.429 @ 0.259 | **0.837** | **0.418** / 0.282 |
+| FAA | Min. rest | **0.862** @ 0.78 | 0.836 | 0.819 @ 0.795 | **0.846** | **0.900** / 0.846 |
+| DGCA | FDP limit | **0.688** @ 0.50 | 0.656 | 0.620 @ 0.572 | **0.652** | **0.618** / 0.556 |
+| DGCA | FDP + ext. | **0.805** @ 0.28 | 0.434 | 0.447 @ 0.390 | **0.676** | **0.441** / 0.326 |
+| DGCA | Duty period | **0.734** @ 0.35 | 0.599 | 0.571 @ 0.498 | 0.528 | **0.538** / 0.442 |
+| DGCA | Min. rest | **0.897** @ 0.77 | 0.850 | 0.853 @ 0.784 | **0.889** | **0.915** / 0.869 |
+
+**With departure seeding, the engine beats the naive rule in both directions on 6 of 7 rules.**
+
+- It wins at its own operating point, and also at the naive rule's recall. Under arrival
+  seeding it had lost at the naive rule's recall on all 7.
+- The one exception is DGCA duty period at the naive rule's recall (0.528 vs 0.571).
+- Average precision favours the engine on all 7.
+
+The likely mechanism: with an earlier and smaller seed (DEP_DELAY × 0.895 rather than the full
+recorded arrival delay), carrying the seed unchanged is a worse guess, while Layer 4's
+absorption model is doing real work. Under departure seeding, Layers 3–4 add value over the
+naive rule at every operating point except one.
+
+## ES2. Severity ordering
+
+### Why MONITOR breached more often than POSSIBLE
+
+Validation dates, departure seeding:
+
+| Profile | Severity | n | Breach rate | Median trigger margin over limit | Median seed delay | Median last-leg depth |
+|---|---|---|---|---|---|---|
+| FAA | LIKELY | 720 | 0.94 | +48 min (median) | 145 | 1 |
+| FAA | POSSIBLE | 232 | 0.57 | **+8 min** (upper bound) | 70 | 1 |
+| FAA | MONITOR | 143 | **0.60** | **+31 min** (carried) | 48 | 3 |
+| DGCA | LIKELY | 687 | 0.92 | +75 min | 155 | 1 |
+| DGCA | POSSIBLE | 327 | 0.57 | **+20 min** | 81 | 1 |
+| DGCA | MONITOR | 123 | 0.55 | **+40 min** | 44 | 3 |
+
+**The hypothesis was wrong.** MONITOR rows do **not** carry larger accumulated delays: their
+seed delays are *smaller* (median 44–48 vs 70–81 min). What differs is the trigger.
+
+- **MONITOR** fires only when the deepest *quantified* upstream delay — its interval upper
+  bound, carried to the last leg with no further absorption — clears the limit. When it fires,
+  it clears it by a median 31–40 min.
+- **POSSIBLE** fires when only the upper bound crosses. The median sits 10–26 min *below* the
+  limit, and half of these cases clear it by under 8–20 min.
+
+So POSSIBLE is dominated by borderline cases, and MONITOR by clearer ones.
+
+### Proposed fix, chosen on validation only
+
+Two one-parameter families were scanned on validation (`severity_ordering_validation.csv`):
+
+- **U:** demote a POSSIBLE alert to MONITOR when its upper bound crosses by less than U min.
+  Grid 0–60.
+- **T:** demote it when the median sits more than T min below the limit. Grid 0–120.
+
+Selection rule, fixed before looking at test: **maximise the smaller of the two profiles'
+(POSSIBLE − MONITOR) breach-rate gap.**
+
+| Family | Threshold | DGCA P / M | FAA P / M | Min gap |
+|---|---|---|---|---|
+| U | 0 (deployed) | 0.569 / 0.553 | 0.569 / 0.601 | −0.032 |
+| U | 5 | 0.613 / 0.492 | 0.580 / 0.583 | −0.003 |
+| **U** | **10 (chosen)** | **0.613 / 0.514** | **0.644 / 0.557** | **+0.087** |
+| U | 15 | 0.594 / 0.542 | 0.632 / 0.570 | +0.052 |
+| U | 20 | 0.576 / 0.558 | 0.615 / 0.576 | +0.018 |
+| T | best (20) | 0.650 / 0.524 | 0.585 / 0.578 | +0.007 |
+
+The T family cannot fix FAA at any threshold.
+
+### Test check: not applied
+
+The condition for applying it was LIKELY ≥ 0.80 **and** strictly LIKELY > POSSIBLE > MONITOR,
+both profiles, on test (`severity_ordering_test.csv`, departure seeding):
+
+| Profile | Labels | LIKELY (n) | POSSIBLE (n) | MONITOR (n) | No alert | Monotone? |
+|---|---|---|---|---|---|---|
+| FAA | deployed | 0.885 (549) | 0.415 (159) | 0.455 (143) | 0.022 | no |
+| FAA | U = 10 | 0.885 (549) | 0.408 (76) | 0.442 (226) | 0.022 | **no** |
+| DGCA | deployed | 0.884 (458) | 0.471 (170) | 0.519 (108) | 0.018 | no |
+| DGCA | U = 10 | 0.884 (458) | 0.436 (110) | 0.524 (168) | 0.018 | **no** |
+
+**Not applied.**
+
+- The ordering that held on validation does not survive test. POSSIBLE's own breach rate falls
+  from about 0.57 on validation to 0.41–0.47 on test (a period shift).
+- With 76–226 alerts per bucket, POSSIBLE and MONITOR are not statistically distinguishable at
+  all.
+- What *is* robust on both splits is the separation of three bands:
+  - LIKELY (~0.88–0.94);
+  - "watch" (POSSIBLE and MONITOR, ~0.41–0.60);
+  - no alert (~0.02).
+
+**Proposal, not applied.** Merge POSSIBLE and MONITOR into a single **WATCH** tier.
+
+- It is monotone on both splits by construction, and needs no threshold.
+- It is honest about what the data supports: the engine can tell "very likely" from "worth
+  watching", but not two shades of "worth watching".
+- It changes the alert vocabulary and the depth-3+ rule's wording ("MONITOR only"), so it is
+  your decision, not mine.
+
+## ES3. Default changed
+
+Departure seeding gives higher actionable recall on every duty-limit rule, in both profiles,
+with LIKELY precision ≥ 0.80 (lowest 0.840, DGCA FDP limit). By the stated condition,
+**`seed_on = "departure"` is now the default** for `GET /api/alerts`.
+
+- The feed's `summary.seed_rule` says so, and /alerts shows it.
+- `seed_on=arrival` remains available.
+- `POST /api/recommendations` is unchanged: its input is an operator-entered *arrival* delay.
+
+Live check, 2025-07-25 FAA:
+
+- 86 crews flagged (64 LIKELY / 14 POSSIBLE / 20 MONITOR), against 104 under arrival seeding.
+- **2 deadline-passed alerts, down from 35.**
+
+**What the earlier LAYER 5 BACKTEST verdict becomes.** Its deciding number — actionable recall
+on FDP breaches — rises from 17% / 19% to **38% / 41%**. That is a real improvement, but
+**still a minority of breaches**. The verdict softens from "a usable warning for one breach in
+six" to "two in five". It is still not enough to rely on alone, and every crew alert still rests
+on the one-crew-per-aircraft proxy.
+
+## ES4. Files
+
+**Changed (Python).**
+
+- `api/layer5/feed.py`: `SEED_MODES`, `DEFAULT_SEED_ON = "departure"`, `select_seeds()`,
+  `seed_rule_text()`; `seed_on` threaded through `evaluate_day` / `day_feed`.
+- `api/layer5/crew.py`: `info_time_utc` on the projection; lead time measured from it.
+- `api/layer5/engine.py`: `info_time_utc` passed through `evaluate_crews`.
+- `api/layer5/backtest.py`:
+  - both seed modes and the `seed_on` column;
+  - the `validation` split mode;
+  - `--severity-ordering`;
+  - carried-trigger margin and last-leg depth in the records;
+  - `build_tables()`.
+- `api/layer5/test_rules.py`: 32 tests, up from 29 (adds `DepartureSeeding` ×3).
+- `api/main.py`: the `seed_on` query parameter.
+- `api/schemas.py`: `AlertFeed.seed_on`.
+- `api/performance_data.py`: Layer 5 rows for both seed modes, plus the default.
+
+**Changed (frontend).** `fdpis-web/lib/types.ts`, `lib/api/performance.ts`,
+`app/performance/page.tsx`. The card shows default-mode rows and the arrival → departure
+comparison, read from the CSVs.
+
+**`results/layer5/`.**
+
+- Regenerated: every CSV now carries `seed_on`.
+- New:
+  - `backtest_records_validation.parquet`
+  - `lead_time_validation.csv`
+  - `severity_ordering_validation.csv`
+  - `severity_ordering_test.csv`
+
+**Not modified.** `api/propagation.py`, `models.py`, `features.py`, `config.py`, notebooks, and
+`results/` outside `results/layer5/`.
+
+**Checks.**
+
+- `api/layer5/test_rules.py`: 32/32 pass.
+- `api/test_parity.py`: passes.
+- `tsc --noEmit` and `next build` are clean.
+- /performance was rendered against the live API.
+
+---
+
+# LAYER 5 WATCH TIER
+
+Run 2026-10-16. Follows **LAYER 5 EARLY SEEDING** §ES2.
+
+## WT1. POSSIBLE and MONITOR merged into WATCH
+
+**How this was decided.** The merge was decided **after** the ES2 test check failed. ES2 had
+chosen a threshold (U = 10 min) on validation dates to separate POSSIBLE from MONITOR, and the
+ordering did not hold on test.
+
+- With 76–226 alerts per bucket, the two tiers' breach rates (about 0.41–0.60) could not be
+  told apart.
+- The merge introduces **no threshold and no tunable parameter**. It relabels two existing
+  buckets as one, so nothing was fitted to the test dates.
+- U = 10 is **not** used anywhere in the engine.
+
+**The new tiers.**
+
+| Tier | When | Predicted value |
+|---|---|---|
+| **LIKELY** | the median prediction crosses the limit (unchanged) | yes |
+| **WATCH**, `watch_reason = "upper_bound_only"` | only the interval upper bound crosses (was POSSIBLE) | yes, the upper bound |
+| **WATCH**, `watch_reason = "beyond_depth_2"` | the last / affected leg is past the depth-2 confidence boundary, and a quantified upstream delay would cross the limit (was MONITOR) | **none**: the depth-2 rule is unchanged |
+
+- `watch_reason` is set if and only if the severity is WATCH.
+- Nothing past depth 2 can be LIKELY, and a `beyond_depth_2` WATCH never carries a number.
+  `test_rules.py` asserts both, and they were re-verified on real feeds (see WT5).
+
+**What changed.**
+
+- **Engine.**
+  - `crew.py`: `LIKELY` / `WATCH`, `UPPER_BOUND_ONLY` / `BEYOND_DEPTH_2`, and
+    `CrewAlertDraft.watch_reason`.
+  - `engine.py`: passenger rules and `make_alert` (`watch_reason` field).
+  - `feed.py`: `alerts_by_severity` now has the keys LIKELY / WATCH, plus a new
+    `watch_by_reason`.
+  - `notify.py`: WATCH messages say "(watch - upper bound only)" or
+    "(watch - not quantified)".
+- **Removed.** The unused `max_severity` cap. No rule ever set it, and it had no meaning under
+  two tiers.
+- **Schemas.** `Alert.severity` is `Literal["LIKELY","WATCH"]`; there is a new
+  `Alert.watch_reason`; and `FeedSummary.watch_by_reason`. A test asserts that `"POSSIBLE"`
+  is now rejected.
+- **Frontend.**
+  - `SeverityChip` shows WATCH with its reason ("upper bound" / "no number"), and a tooltip
+    explains each.
+  - The /alerts summary tiles are Likely / Watch.
+  - The `RecommendationPanel` footer is rewritten.
+  - The /performance card has a three-band table.
+- **Backtest.** It records `engine_watch_reason`, and the mirror check covers the two tiers.
+  - For the ES2 `--severity-ordering` scan, the pre-merge labels are reconstructed from
+    `watch_reason`, so that analysis stays reproducible.
+  - Re-running it gives the identical result: U = 10 chosen, fails on test.
+
+## WT2. Three bands: validation and test, both profiles
+
+`results/layer5/three_band.csv`. Both splits were re-run from scratch with the merged engine:
+validation 307 s, test 387 s, **0 engine/mirror mismatches** in each. Observed breach rate
+(n):
+
+| Split | Seed | Profile | LIKELY | WATCH | No alert | Ordered? |
+|---|---|---|---|---|---|---|
+| validation | **departure** | FAA | **0.936** (720) | **0.581** (375) | **0.030** (28,891) | ✓ |
+| validation | **departure** | DGCA | **0.921** (687) | **0.564** (450) | **0.028** (32,007) | ✓ |
+| test | **departure** | FAA | **0.885** (549) | **0.434** (302) | **0.022** (26,331) | ✓ |
+| test | **departure** | DGCA | **0.884** (458) | **0.489** (278) | **0.018** (29,356) | ✓ |
+| validation | arrival | FAA | 0.952 (858) | 0.553 (414) | 0.022 (28,592) | ✓ |
+| validation | arrival | DGCA | 0.922 (883) | 0.459 (447) | 0.020 (31,645) | ✓ |
+| test | arrival | FAA | 0.913 (610) | 0.433 (353) | 0.016 (26,087) | ✓ |
+| test | arrival | DGCA | 0.904 (543) | 0.492 (325) | 0.013 (29,145) | ✓ |
+
+**The three-band ordering LIKELY > WATCH > no alert holds on both splits, both profiles and
+both seed modes.**
+
+- Each band is separated by a wide margin: about 0.4 between LIKELY and WATCH, and about 0.4
+  between WATCH and no alert.
+- The two sub-reasons inside WATCH remain indistinguishable from each other, which is the
+  point of the merge. On test / departure seeding:
+  - `upper_bound_only` breaches at 0.415 (FAA) and 0.471 (DGCA);
+  - `beyond_depth_2` breaches at 0.455 and 0.519.
+
+**One definition changed.** "Actionable recall" now counts **any** actionable alert (LIKELY or
+WATCH). It previously counted LIKELY + POSSIBLE and left out MONITOR. Under the default
+(departure) seeding, on test:
+
+| Profile | Rule | LIKELY precision | Actionable recall: any alert (new) | Actionable recall: LIKELY only |
+|---|---|---|---|---|
+| FAA | FDP limit | 0.849 | **0.465** | 0.300 |
+| FAA | Minimum rest | 0.906 | 0.680 | 0.610 |
+| FAA | All crew rules | 0.885 | 0.508 | 0.397 |
+| DGCA | FDP limit | 0.840 | **0.485** | 0.326 |
+| DGCA | Minimum rest | 0.929 | 0.709 | 0.634 |
+| DGCA | All crew rules | 0.884 | 0.487 | 0.361 |
+
+The ES1 figures (0.376 / 0.412 for FDP) were the old LIKELY + POSSIBLE definition. They are not
+comparable with the 0.465 / 0.485 here, which also count beyond-depth-2 WATCH.
+
+## WT3. `POST /api/recommendations`: arrival or departure delay
+
+The body now takes `tail`, `date`, `leg_num`, an optional `profile`, and **exactly one** of
+`arrival_delay` / `departure_delay`. A Pydantic `model_validator` enforces this: neither or
+both returns **422**.
+
+- **`departure_delay`** is converted to an arrival delay as `departure_delay × recovery_rate`
+  (0.8952, `bundle.recovery_rate`). This is the same conversion the departure-seeded feed uses.
+  Lead times are measured from the leg's actual departure, as in the feed.
+- **`arrival_delay`** is used as is, with lead times measured from the actual arrival, as
+  before.
+- The response gains a `seed` block: `kind`, `input_minutes`, `arrival_delay_used`,
+  `recovery_rate`, `information_time_utc`.
+- The cascade panel sends `arrival_delay`, since its operator-entered delay is an arrival
+  delay.
+- `observed_delay_minutes` is no longer accepted on this endpoint. `POST /api/propagate` is
+  unchanged.
+
+**Tests.**
+
+- `RecommendationRequestValidation`: exactly-one validation at schema level.
+- `EndpointMatchesFeed` (FastAPI `TestClient`, real models):
+  - **Endpoint and feed give identical crew alerts for the same seed.** For 12 aircraft per
+    profile on 2025-07-25 (24 seeds), the departure-seeded `/api/alerts` feed was compared
+    with `POST /api/recommendations` for the same tail, seed leg and `DEP_DELAY`. On every
+    seed the crew alerts are equal on rule, severity, `watch_reason`, predicted value,
+    threshold, deadline (UTC and station), usable lead, status and flight.
+  - `departure_delay = 100` → `arrival_delay_used` = 100 × 0.8952 in both the `seed` block and
+    the chain.
+  - Both or neither delay → 422; one → 200.
+- Live check: `departure_delay = 40` on N8714Q leg 1 → arrival 35.81, information time
+  11:00Z, which is 06:20 EDT + 40 min.
+
+## WT4. Tests and checks
+
+- **`api/layer5/test_rules.py`: 38/38 pass**, up from 32. Added:
+  - `WatchTier` ×2: only two severities exist; reason iff WATCH; `beyond_depth_2` has no
+    value; schema rejects `POSSIBLE`.
+  - `RecommendationRequestValidation` ×1.
+  - `EndpointMatchesFeed` ×3.
+- The existing depth-2 tests now assert WATCH + `beyond_depth_2` + no value, where they
+  previously asserted MONITOR.
+- **`api/test_parity.py`: passes** (Layer 4 max diff 0.004968 min).
+- **Frontend:** `tsc --noEmit` and `next build` are clean.
+- **Live render** of /alerts (2025-07-31):
+  - 36 LIKELY and 29 WATCH alerts.
+  - Every WATCH chip shows its reason.
+  - **No "POSSIBLE" or "MONITOR" text remains.**
+- **Live render** of /performance: the three-band table appears, read from `three_band.csv`.
+
+## WT5. Files
+
+**Changed (Python).**
+
+- `api/layer5/crew.py`, `engine.py`, `feed.py`, `notify.py`, `backtest.py`, `test_rules.py`
+- `api/schemas.py`: severity literal, `watch_reason`, `watch_by_reason`; the
+  `RecommendationRequest` rewrite and `RecommendationSeed`.
+- `api/main.py`: the recommendations endpoint.
+- `api/performance_data.py`: `three_band` and the actionable-recall columns.
+- `api/README.md`
+
+**Changed (frontend).**
+
+- `fdpis-web/lib/types.ts`, `lib/api/recommendations.ts`, `lib/api/performance.ts`
+- `components/rules/RuleUi.tsx`, `components/alerts/AlertsConsole.tsx`,
+  `components/cascade/RecommendationPanel.tsx`
+- `app/performance/page.tsx`
+
+**`results/layer5/`.** All tables regenerated with two-tier labels. New: `three_band.csv`.
+`backtest_records.parquet` and `backtest_records_validation.parquet` now carry
+`engine_watch_reason`.
+
+**Not modified.** `api/propagation.py`, `models.py`, `features.py`, `config.py`, notebooks, and
+`results/` outside `results/layer5/`. Nothing committed.
+
+## WT6. Actionable FDP recall vs precision: three alert sets
+
+`results/layer5/recall_precision_sets.csv` (`python -m api.layer5.backtest --recall-sets`).
+
+**Scope.** FDP-limit rule, departure seeding, single-crew model, validation and test. Every set
+is scored on the **same** rows: applicable, rule evaluated, outcome known, not cancelled
+downstream. So each precision is matched to its recall.
+
+**The three sets are nested:**
+
+- **(a)** LIKELY only.
+- **(b)** LIKELY + WATCH `upper_bound_only`.
+- **(c)** All alerts, including WATCH `beyond_depth_2`.
+
+**Columns.**
+
+- *Actionable recall*: breaches that got an alert in the set *before its action deadline*,
+  divided by all breaches.
+- *Precision*: breaches divided by all alerts in the set.
+- *Actionable precision*: the same, over actionable alerts only. It is within 0.004 of
+  precision everywhere, because under departure seeding almost no alert is late.
+
+| Split | Profile | Breaches | Set | Alerts | Actionable recall | Precision | Actionable precision |
+|---|---|---|---|---|---|---|---|
+| validation | FAA | 788 | **(a) LIKELY only** | 235 | **0.263** | **0.898** | 0.896 |
+| validation | FAA | | (b) + WATCH upper | 380 | 0.363 | 0.763 | 0.761 |
+| validation | FAA | | (c) all alerts | 488 | 0.443 | 0.725 | 0.723 |
+| validation | DGCA | 693 | **(a) LIKELY only** | 250 | **0.310** | **0.880** | 0.878 |
+| validation | DGCA | | (b) + WATCH upper | 401 | 0.429 | 0.756 | 0.752 |
+| validation | DGCA | | (c) all alerts | 472 | 0.482 | 0.720 | 0.717 |
+| test | FAA | 540 | **(a) LIKELY only** | 192 | **0.300** | **0.849** | 0.853 |
+| test | FAA | | (b) + WATCH upper | 300 | 0.376 | 0.680 | 0.681 |
+| test | FAA | | (c) all alerts | 408 | 0.465 | 0.618 | 0.620 |
+| test | DGCA | 427 | **(a) LIKELY only** | 169 | **0.326** | **0.840** | 0.837 |
+| test | DGCA | | (b) + WATCH upper | 260 | 0.412 | 0.688 | 0.685 |
+| test | DGCA | | (c) all alerts | 319 | 0.485 | 0.658 | 0.655 |
+
+**Reading it.**
+
+- Each step down the list buys about 8–10 points of actionable recall for about 15–20 points
+  of precision first, then about 4–6 points more. The pattern is the same on both splits.
+- **(a) is the headline.** It is the only set whose precision stays above 0.84 on test. It
+  warns about **30% (FAA) / 33% (DGCA)** of FDP breaches in time, at 85% / 84% precision.
+- (b) and (c) are shown as the trade-off: up to 47–49% recall, at 62–66% precision.
+- Two figures from earlier sections are the same quantities under the new names, now on
+  matched rows:
+  - ES1's 0.376 / 0.412 is set (b).
+  - WT2's "any alert" 0.465 / 0.485 is set (c).
+
+**On the /performance card,** each profile shows (a) as the headline number ("30% of 540
+breaches, at 85% precision"), with (b) and (c) underneath as a one-line trade-off. Everything
+is read from the CSV.
+
+**Remaining `observed_delay_minutes` uses.** A grep over `api/` and `fdpis-web/` finds it only
+on `POST /api/propagate`: the request field, the response field and its one caller,
+`simulateCascade`. That endpoint is unchanged by design. **No caller still sends it to
+`/api/recommendations`**, so nothing needed fixing. `api/README.md` gains a
+`/api/recommendations` example using `departure_delay`.

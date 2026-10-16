@@ -82,6 +82,11 @@ the frontend can explain why.
 | POST | `/api/propagate` | Cascade from a user-entered delay |
 | GET | `/api/cascade/{tail}/{date}/{leg_num}` | Cascade from the historical actual delay |
 | GET | `/api/performance` | Published model metrics |
+| GET | `/api/rules?profile=` | Layer 5 rule profiles (`faa_part117`, `dgca_fdtl`) with source citations and `verified` flags |
+| POST | `/api/recommendations` | Propagation + Layer 5 rule engine. Body: `tail`, `date`, `leg_num`, exactly one of `arrival_delay` / `departure_delay` (converted x recovery rate, as in the feed), optional `profile` |
+| GET | `/api/alerts?date=&carrier=&profile=` | Crew duty alert feed for a whole day, sorted by action deadline |
+| POST | `/api/alerts/{id}/notify` | Write a SIMULATED crew notification (nothing is sent) |
+| GET | `/api/notifications` | The SIMULATED notification outbox |
 
 Errors: `404` unknown date/tail/leg, `422` malformed input, `503` models not loaded.
 
@@ -100,6 +105,11 @@ curl 'http://127.0.0.1:8000/api/cascade/N700UW/2025-07-25/2'
 curl -X POST 'http://127.0.0.1:8000/api/propagate' \
   -H 'Content-Type: application/json' \
   -d '{"tail":"N700UW","date":"2025-07-25","leg_num":2,"observed_delay_minutes":90}'
+
+# Layer 5: propagation + rules. Exactly one of arrival_delay / departure_delay.
+curl -X POST 'http://127.0.0.1:8000/api/recommendations' \
+  -H 'Content-Type: application/json' \
+  -d '{"tail":"N8714Q","date":"2025-07-25","leg_num":1,"departure_delay":40,"profile":"faa_part117"}'
 ```
 
 `GET /api/briefing?date=2025-07-25&carrier=AA&limit=1`:
@@ -201,3 +211,24 @@ check_constants  PASS  constants match notebook 5
 Layer 3 is bit-identical. Layer 4's residual is API response rounding to two
 decimals against full-precision saved values. Constants: PRIMARY_MEAN 21.5521,
 PRIMARY_MEDIAN 11.0000, SHRINK 0.5104, RECOVERY_RATE 0.8952.
+
+## Layer 5 - rule engine and crew alerts (`api/layer5/`)
+
+Rules are data: `layer5/rules/faa_part117.json` and `layer5/rules/dgca_fdtl.json`.
+Every rule carries its regulation, section, URL and a `verified` flag; the engine
+holds no thresholds of its own. Alert severity respects the confidence boundary:
+two tiers: LIKELY (the median crosses) and WATCH, with `watch_reason`
+`upper_bound_only` (only the interval upper bound crosses) or `beyond_depth_2` (past
+depth 2, where there is no number to compare - such alerts carry no predicted value).
+
+Crew duty is a **proxy**: a crew is assumed to stay with its aircraft all day,
+because airline crew rosters are not public. Every crew alert says so. Aircraft
+whose *scheduled* day already exceeds single-crew limits are reported as
+`proxy_not_applicable` and raise no alert.
+
+The notification outbox is **simulated**: no SMS, email or push service exists;
+recipients are roles, not people.
+
+```
+conda run -n fdpis python -m unittest api.layer5.test_rules -v
+```

@@ -11,3 +11,4 @@ export * from "@/lib/api/flights";
 export * from "@/lib/api/rotations";
 export * from "@/lib/api/cascade";
 export * from "@/lib/api/performance";
+export * from "@/lib/api/recommendations";

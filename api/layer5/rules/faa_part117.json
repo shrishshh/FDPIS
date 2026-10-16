@@ -1,0 +1,141 @@
+{
+  "profile": "faa_part117",
+  "name": "FAA 14 CFR Part 117 (flightcrew duty) + DOT 14 CFR Part 260 (passenger refunds)",
+  "short_name": "FAA Part 117",
+  "jurisdiction": "United States",
+  "applies_to": "The US demo dataset (BTS 2025). US Part 121 carriers operate under 14 CFR Part 117, not DGCA.",
+  "researched_on": "2026-10-16",
+  "primary_sources": [
+    {
+      "document": "14 CFR Part 117 - Flight and Duty Limitations and Rest Requirements: Flightcrew Members",
+      "url": "https://www.ecfr.gov/current/title-14/chapter-I/subchapter-G/part-117",
+      "retrieved_via": "eCFR versioner API, https://www.ecfr.gov/api/versioner/v1/full/2026-10-13/title-14.xml?part=117 (eCFR text up to date as of 2026-10-13)"
+    },
+    {
+      "document": "14 CFR Part 260 - Refunds for Airline Fare and Ancillary Service Fees",
+      "url": "https://www.ecfr.gov/current/title-14/chapter-II/subchapter-A/part-260",
+      "retrieved_via": "eCFR versioner API, https://www.ecfr.gov/api/versioner/v1/full/2026-10-13/title-14.xml?part=260"
+    }
+  ],
+  "proxy": {
+    "report_buffer_minutes": {
+      "value": 60,
+      "regulatory_value": null,
+      "source": "14 CFR 117.3: 'Report time means the time that the certificate holder requires a flightcrew member to report for an assignment.'",
+      "verified": true,
+      "notes": "Verified that Part 117 does NOT fix a report buffer - it is carrier-defined. 60 minutes is therefore an ASSUMPTION, not a regulatory number."
+    },
+    "post_flight_buffer_minutes": {
+      "value": 15,
+      "regulatory_value": null,
+      "source": "14 CFR 117.3: an FDP 'ends when the aircraft is parked after the last flight'. Post-flight duties are 'duty' (117.3 'Duty'), not FDP.",
+      "verified": true,
+      "notes": "Because the FDP ends at block-in, this buffer is NOT added to the FDP compared against Table B. It only moves the release-from-duty time from which rest (117.25(e)) is measured. 15 minutes is an assumption."
+    },
+    "standby_callout_minutes": {
+      "value": 90,
+      "regulatory_value": null,
+      "source": "None. Reserve response times are set in each carrier's reserve scheme.",
+      "verified": false,
+      "notes": "Lead time a standby crew needs between call-out and report. Used only to compute the action deadline. Assumption."
+    },
+    "acclimated": {
+      "value": true,
+      "source": "14 CFR 117.13(b), 117.3 'Acclimated'",
+      "verified": true,
+      "notes": "Crew assumed acclimated to the first departure airport's time zone, so the 117.13(b)(1) 30-minute reduction for non-acclimated crew is not applied."
+    }
+  },
+  "rules": [
+    {
+      "id": "crew_fdp_limit",
+      "category": "crew",
+      "kind": "crew_fdp",
+      "description": "Maximum flight duty period, unaugmented two-pilot operation, from Table B: depends on the scheduled time of start (acclimated local time) and the number of flight segments.",
+      "comparator": "gt",
+      "threshold": {
+        "type": "faa_table_b",
+        "column_basis": "number of flight segments (7 means 7 or more)",
+        "row_basis": "scheduled time of start, acclimated local time (HHMM, inclusive ranges)",
+        "rows": [
+          {"start": "0000", "end": "0359", "hours": [9, 9, 9, 9, 9, 9, 9]},
+          {"start": "0400", "end": "0459", "hours": [10, 10, 10, 10, 9, 9, 9]},
+          {"start": "0500", "end": "0559", "hours": [12, 12, 12, 12, 11.5, 11, 10.5]},
+          {"start": "0600", "end": "0659", "hours": [13, 13, 12, 12, 11.5, 11, 10.5]},
+          {"start": "0700", "end": "1159", "hours": [14, 14, 13, 13, 12.5, 12, 11.5]},
+          {"start": "1200", "end": "1259", "hours": [13, 13, 13, 13, 12.5, 12, 11.5]},
+          {"start": "1300", "end": "1659", "hours": [12, 12, 12, 12, 11.5, 11, 10.5]},
+          {"start": "1700", "end": "2159", "hours": [12, 12, 11, 11, 10, 9, 9]},
+          {"start": "2200", "end": "2259", "hours": [11, 11, 10, 10, 9, 9, 9]},
+          {"start": "2300", "end": "2359", "hours": [10, 10, 10, 9, 9, 9, 9]}
+        ]
+      },
+      "unit": "minutes",
+      "source": "14 CFR 117.13(a) and Table B to Part 117 - Flight Duty Period: Unaugmented Operations. https://www.ecfr.gov/current/title-14/chapter-I/subchapter-G/part-117",
+      "verified": true,
+      "notes": "Table encoded verbatim (lineholder values). 117.13(a): no assignment if the scheduled FDP 'will exceed' the limit, so an FDP exactly at the limit is legal (comparator gt). Not modelled: 117.15 split duty, 117.17 augmented crews, 117.21 reserve-specific limits, non-acclimated reduction."
+    },
+    {
+      "id": "crew_fdp_extension_limit",
+      "category": "crew",
+      "kind": "crew_fdp_extended",
+      "description": "Table B limit plus the maximum pre-takeoff extension. Beyond this the pilot in command and certificate holder cannot extend: the crew cannot legally start the leg.",
+      "comparator": "gt",
+      "threshold": {"type": "base_plus", "base_rule": "crew_fdp_limit", "plus_minutes": 120},
+      "unit": "minutes",
+      "source": "14 CFR 117.19(a)(1): 'the pilot in command and the certificate holder may extend the maximum flight duty period permitted in Tables B or C of this part up to 2 hours.' https://www.ecfr.gov/current/title-14/chapter-I/subchapter-G/part-117",
+      "verified": true,
+      "notes": "Extension applies only to unforeseen operational circumstances arising before takeoff; an extension of more than 30 min may occur only once before a 117.25(b) rest (117.19(a)(2)) and must be reported to the FAA within 10 days (117.19(a)(4)). 117.19(b) post-takeoff extensions (to land at the destination) are not modelled - this engine plans before takeoff. Cumulative-limit interaction (117.19(a)(3), 117.23(c)) not modelled: no crew history."
+    },
+    {
+      "id": "crew_flight_time_limit",
+      "category": "crew",
+      "kind": "crew_flight_time",
+      "description": "Maximum flight time, unaugmented operation, by time of report (Table A).",
+      "comparator": "gt",
+      "threshold": {
+        "type": "by_report_time",
+        "rows": [
+          {"start": "0000", "end": "0459", "hours": 8},
+          {"start": "0500", "end": "1959", "hours": 9},
+          {"start": "2000", "end": "2359", "hours": 8}
+        ]
+      },
+      "unit": "minutes",
+      "source": "14 CFR 117.11(a)(1) and Table A to Part 117 - Maximum Flight Time Limits for Unaugmented Operations. https://www.ecfr.gov/current/title-14/chapter-I/subchapter-G/part-117",
+      "verified": true,
+      "notes": "Evaluated against SCHEDULED block time only (BTS CRS_ELAPSED_TIME). Delays in this model change departure/arrival times, not block time, so this rule is used to test whether the single-crew proxy is plausible for a rotation, never to raise a delay alert."
+    },
+    {
+      "id": "crew_min_rest",
+      "category": "crew",
+      "kind": "crew_rest",
+      "description": "Minimum rest of 10 consecutive hours before the next flight duty period, measured from release from duty.",
+      "comparator": "lt",
+      "threshold": 600,
+      "unit": "minutes",
+      "source": "14 CFR 117.25(e): 'a rest period of at least 10 consecutive hours immediately before beginning the reserve or flight duty period measured from the time the flightcrew member is released from duty.' https://www.ecfr.gov/current/title-14/chapter-I/subchapter-G/part-117",
+      "verified": true,
+      "notes": "Evaluated only when the same aircraft operates on the next calendar date in the dataset (proxy: same crew). Rest = next day's report time - (projected block-in + post-flight buffer). The 8-hour uninterrupted sleep opportunity inside the 10 hours (117.25(e)) and 117.25(b) 30 h in 168 h are not modelled."
+    },
+    {
+      "id": "pax_dot_significant_delay",
+      "category": "passenger",
+      "kind": "pax_arrival_delay",
+      "description": "'Significantly delayed' domestic flight: scheduled to arrive 3 hours or more after the original scheduled arrival. A passenger who declines the delayed flight is entitled to a refund.",
+      "comparator": "gte",
+      "threshold": 180,
+      "unit": "minutes",
+      "source": "14 CFR 260.2, definition 'Significantly delayed or changed flight', paragraph (2): 'The consumer is scheduled to arrive at the destination airport three or more hours for domestic itineraries ... after the original scheduled arrival time'. https://www.ecfr.gov/current/title-14/chapter-II/subchapter-A/part-260",
+      "verified": true,
+      "notes": "Issued by DOT (not FAA) - included because the US profile otherwise has no passenger rule. All flights in the dataset are treated as domestic itineraries (6-hour international threshold not used). Predicted arrival delay = predicted departure delay x Layer 4 recovery rate. Applies to the passenger's itinerary; evaluated per flight here."
+    }
+  ],
+  "not_encoded": [
+    {"rule": "14 CFR 117.23 cumulative FDP / flight-time limits (60 h/168 h, 190 h/672 h, 100 h/672 h)", "reason": "Requires individual crew history; crew rosters are not public."},
+    {"rule": "14 CFR 117.25(b) 30 consecutive hours free from duty in any 168 hours", "reason": "Requires a week of crew history."},
+    {"rule": "14 CFR 117.15 split duty, 117.17 augmented operations (Table C), 117.21 reserve status", "reason": "Not observable from schedule data; demo assumes unaugmented lineholder crews."},
+    {"rule": "14 CFR 259.4 tarmac delay (3 h domestic deplaning, food and water within 2 h)", "reason": "Verified in primary text but not applicable: the model predicts gate departure delay, not time on the tarmac with passengers boarded."},
+    {"rule": "US federal requirement to provide meals or hotels for gate delays", "reason": "Not found in the primary text reviewed (14 CFR 259.4 and Part 260). Part 259 was not reviewed in full. Carrier meal/hotel commitments are carrier-specific, so none is encoded."}
+  ]
+}

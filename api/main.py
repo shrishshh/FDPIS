@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from functools import lru_cache
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -20,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, propagation, schemas
 from .models import StartupError, load_bundle
+from .layer5 import engine as layer5, feed as layer5_feed, notify as layer5_notify
 from .performance_data import PERFORMANCE
 
 log = logging.getLogger("fdpis.api")
@@ -339,3 +341,83 @@ def cascade(tail: str, date: str, leg_num: int):
 
     return _run_propagation(tail, date, leg_num, max(float(actual), 0.0),
                             "historical_actual")
+
+
+# ------------------------------------------------------ layer 5: rules ---
+def _profile(name: str) -> dict:
+    try:
+        return layer5.load_profile(name)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/rules")
+def rules(profile: Optional[str] = Query(None, description="faa_part117 or dgca_fdtl; omit for all")):
+    """The loaded rule sets, with source citations and verified flags."""
+    names = [profile] if profile else layer5.list_profiles()
+    return {
+        "default_profile": layer5.DEFAULT_PROFILE,
+        "profiles": [{**_profile(n), "unverified": layer5.unverified(_profile(n)),
+                      "disclosure": layer5.disclosure(_profile(n))} for n in names],
+    }
+
+
+@app.post("/api/recommendations", response_model=schemas.RecommendationResponse)
+def recommendations(req: schemas.RecommendationRequest):
+    """Run Layer 4 propagation, then evaluate the rule profile against it.
+
+    The seed is either the leg's arrival delay, or its departure delay converted
+    with the recovery rate - the same conversion the departure-seeded feed uses.
+    """
+    _parse_date(req.date)
+    _profile(req.profile)
+    b = bundle()
+    if req.departure_delay is not None:
+        arrival = float(req.departure_delay) * b.recovery_rate
+    else:
+        arrival = float(req.arrival_delay)
+    chain = _run_propagation(req.tail, req.date, req.leg_num, arrival, "user_input")
+    result = layer5.recommend(b, req.profile, req.tail, req.date, req.leg_num, arrival,
+                              {"hops": [h.model_dump() for h in chain.hops]},
+                              departure_delay=req.departure_delay)
+    return {"chain": chain, **result}
+
+
+@app.get("/api/alerts", response_model=schemas.AlertFeed)
+def alerts(date: str = Query(..., description="YYYY-MM-DD"),
+           carrier: Optional[str] = Query(None),
+           profile: str = Query(layer5.DEFAULT_PROFILE),
+           crew_model: str = Query("single", description="single (default) or "
+                                   "inferred_blocks (EXPERIMENTAL, hypothetical split points)"),
+           seed_on: Optional[str] = Query(None, description="arrival or departure; omit for "
+                                          "the default")):
+    """Crew duty alert feed for a whole day, sorted by action deadline."""
+    _parse_date(date)
+    _profile(profile)
+    if crew_model not in layer5.CREW_MODELS:
+        raise HTTPException(422, f"crew_model must be one of {layer5.CREW_MODELS}")
+    if seed_on is not None and seed_on not in layer5_feed.SEED_MODES:
+        raise HTTPException(422, f"seed_on must be one of {layer5_feed.SEED_MODES}")
+    try:
+        return layer5_feed.day_feed(bundle(), profile, date, carrier, crew_model, seed_on)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/alerts/{alert_id}/notify", response_model=schemas.Notification)
+def notify_alert(alert_id: int):
+    """Create a SIMULATED crew notification from an alert. Nothing is sent."""
+    alert = layer5.REGISTRY.get(alert_id)
+    if alert is None:
+        raise HTTPException(404, f"no alert #{alert_id} (alerts are registered when a feed or "
+                                 f"recommendation is generated)")
+    try:
+        return layer5_notify.create(alert)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/notifications", response_model=schemas.NotificationOutbox)
+def notifications():
+    """The SIMULATED notification outbox, newest first."""
+    return {"notice": layer5_notify.NOTICE, "notifications": layer5_notify.outbox()}

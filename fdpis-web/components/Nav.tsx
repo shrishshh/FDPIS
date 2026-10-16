@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BarChart3, ClipboardList, GitBranch } from "lucide-react";
+import { Activity, BarChart3, BellRing, ClipboardList, GitBranch } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { ScopeBar } from "@/components/ScopeBar";
 
@@ -10,6 +10,7 @@ const LINKS = [
   { href: "/briefing", label: "Briefing", icon: ClipboardList },
   { href: "/cascade", label: "Cascade", icon: GitBranch },
   { href: "/live", label: "Live", icon: Activity },
+  { href: "/alerts", label: "Alerts", icon: BellRing },
   { href: "/performance", label: "Performance", icon: BarChart3 },
 ];
 

@@ -198,7 +198,12 @@ export function CascadeExplorer({
           </section>
 
           <RecommendationPanel
-            recommendations={cascade.recommendations}
+            request={{
+              tail: cascade.tail,
+              date: cascade.date,
+              legIndex: cascade.originLeg,
+              observedDelayMin: cascade.observedDelayMin,
+            }}
             className="self-start xl:sticky xl:top-20"
           />
         </div>

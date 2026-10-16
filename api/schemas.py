@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ------------------------------------------------------------------ meta ---
@@ -160,3 +160,189 @@ class PropagateResponse(BaseModel):
     observed_delay_source: Literal["user_input", "historical_actual"]
     hops: list[Hop]
     summary: ChainSummary
+
+
+# ------------------------------------------------- layer 5 (rule engine) ---
+class RecommendationRequest(BaseModel):
+    """Exactly one of arrival_delay / departure_delay.
+
+    arrival_delay    the disrupted leg's arrival delay (minutes)
+    departure_delay  its departure delay; converted to an arrival delay with the
+                     Layer 4 recovery rate (x 0.895), exactly as the departure-seeded
+                     /api/alerts feed does. Lead times are then measured from the
+                     leg's actual departure.
+    """
+    tail: str = Field(..., min_length=2, max_length=10)
+    date: str = Field(..., description="YYYY-MM-DD")
+    leg_num: int = Field(..., ge=1, le=20)
+    arrival_delay: Optional[float] = Field(None, ge=0, le=1500)
+    departure_delay: Optional[float] = Field(None, ge=0, le=1500)
+    profile: str = Field("faa_part117", description="Rule profile: faa_part117 or dgca_fdtl")
+
+    @model_validator(mode="after")
+    def exactly_one_delay(self):
+        if (self.arrival_delay is None) == (self.departure_delay is None):
+            raise ValueError("give exactly one of arrival_delay or departure_delay")
+        return self
+
+
+class RecommendationSeed(BaseModel):
+    kind: Literal["arrival", "departure"]
+    input_minutes: float
+    arrival_delay_used: float = Field(..., description="arrival delay fed to Layer 4; for a "
+                                      "departure seed = departure_delay x recovery rate")
+    recovery_rate: Optional[float]
+    information_time_utc: Optional[str] = Field(
+        None, description="when the seed delay is first known; lead times are measured from here")
+
+
+class AlertFlight(BaseModel):
+    flight_number: str
+    leg_num: int
+    origin: str
+    dest: str
+    depth: Optional[int] = Field(None, description="hops downstream of the seed; 0 = the seed leg")
+    scheduled_dep_local: Optional[str]
+
+
+class AlertDuty(BaseModel):
+    report_time_local: Optional[str]
+    report_station: Optional[str]
+    segments: int
+    fdp_limit_minutes: Optional[float]
+    projected_duty_end_local: Optional[str]
+    projected_duty_end_station: Optional[str]
+    fdp_projected_median_minutes: Optional[float]
+    fdp_projected_upper_minutes: Optional[float]
+    seed_leg: Optional[int]
+    seed_arrival_delay_minutes: Optional[float]
+
+
+class DutyBlock(BaseModel):
+    index: int
+    count: int
+    first_leg: int
+    last_leg: int
+    label: str = Field(..., description="inferred duty block - hypothetical, not a roster")
+
+
+class Alert(BaseModel):
+    id: int
+    rule_id: str
+    category: Literal["crew", "passenger"]
+    severity: Literal["LIKELY", "WATCH"]
+    watch_reason: Optional[Literal["upper_bound_only", "beyond_depth_2"]] = Field(
+        None, description="WATCH only: upper_bound_only (only the interval upper bound "
+                          "crosses) or beyond_depth_2 (no number past the confidence boundary)")
+    profile: str
+    profile_name: str
+    tail: str
+    date: str
+    flight: Optional[AlertFlight]
+    predicted_value_minutes: Optional[float] = Field(
+        None, description="null for WATCH beyond_depth_2: past the depth-2 boundary there is no number")
+    predicted_basis: str
+    threshold_minutes: float
+    comparator: Literal["gt", "gte", "lt"]
+    margin_minutes: Optional[float]
+    description: str
+    detail: str
+    action: str
+    source: str
+    verified: bool
+    deadline_utc: Optional[str]
+    deadline_local: Optional[str]
+    deadline_station: Optional[str]
+    crew_proxy: bool = Field(..., description="True when based on the rotation crew proxy, "
+                                              "not real crew assignments")
+    proxy_disclosure: Optional[str]
+    duty: Optional[AlertDuty] = None
+    status: Literal["actionable", "deadline_passed"] = "actionable"
+    usable_lead_minutes: Optional[float] = Field(
+        None, description="action deadline minus the seed leg's actual arrival (when the "
+                          "information first existed); <= 0 means deadline_passed")
+    crew_model: Optional[Literal["single", "inferred_blocks"]] = None
+    duty_block: Optional[DutyBlock] = None
+
+
+class CrewProjection(BaseModel):
+    status: Literal["ok", "at_risk", "proxy_not_applicable", "breached_at_seed", "no_rotation"]
+    status_reason: str
+    report_time_utc: Optional[str]
+    report_time_local: Optional[str]
+    report_station: Optional[str]
+    segments: int
+    scheduled_block_minutes: float
+    fdp_limit_minutes: Optional[float]
+    fdp_scheduled_minutes: Optional[float]
+    fdp_projected_median_minutes: Optional[float]
+    fdp_projected_upper_minutes: Optional[float]
+    duty_end_median_utc: Optional[str]
+    duty_end_median_local: Optional[str]
+    duty_end_station: Optional[str]
+    last_leg_quantified: bool
+    next_report_utc: Optional[str]
+    disclosure: str
+
+
+class Unverified(BaseModel):
+    rules: list[str]
+    assumptions: list[str]
+
+
+class RecommendationResponse(BaseModel):
+    chain: PropagateResponse
+    seed: RecommendationSeed
+    profile: str
+    profile_name: str
+    disclosure: str
+    unverified: Unverified
+    crew_projection: CrewProjection
+    alerts: list[Alert]
+
+
+class FeedSummary(BaseModel):
+    aircraft: int
+    aircraft_with_delay_seed: int
+    rotations_by_status: dict[str, int]
+    aircraft_days_covered: int
+    coverage_share: float
+    alerts_deadline_passed: int
+    crews_flagged: int
+    alerts_by_severity: dict[str, int]
+    watch_by_reason: dict[str, int]
+    next_day_in_dataset: bool
+    seed_rule: str
+
+
+class AlertFeed(BaseModel):
+    date: str
+    carrier: Optional[str]
+    profile: str
+    profile_name: str
+    crew_model: Literal["single", "inferred_blocks"]
+    crew_model_label: str
+    seed_on: Literal["arrival", "departure"]
+    disclosure: str
+    unverified: Unverified
+    summary: FeedSummary
+    alerts: list[Alert]
+
+
+class Notification(BaseModel):
+    notification_id: int
+    alert_id: int
+    recipient_role: str
+    channel: Literal["SMS", "crew app push"]
+    message: str
+    created_utc: str
+    status: Literal["SIMULATED — not sent"]
+    simulated: Literal[True]
+    notice: str
+    alert: dict
+
+
+class NotificationOutbox(BaseModel):
+    simulated: Literal[True] = True
+    notice: str
+    notifications: list[Notification]

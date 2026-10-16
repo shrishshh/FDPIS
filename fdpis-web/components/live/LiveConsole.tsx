@@ -164,9 +164,6 @@ export function LiveConsole() {
       ? rotation.legs.find((l) => l.legIndex === legIndex) ?? null
       : null;
 
-  const visibleRecommendations = (cascade?.recommendations ?? []).filter(
-    (r) => r.triggeredAtHop <= revealed,
-  );
 
   if (loadError) {
     return (
@@ -384,7 +381,17 @@ export function LiveConsole() {
         </div>
 
         <RecommendationPanel
-          recommendations={visibleRecommendations}
+          request={
+            cascade
+              ? {
+                  tail: cascade.tail,
+                  date: cascade.date,
+                  legIndex: cascade.originLeg,
+                  observedDelayMin: cascade.observedDelayMin,
+                }
+              : null
+          }
+          revealedHop={revealed}
           className="self-start xl:sticky xl:top-20"
         />
       </div>

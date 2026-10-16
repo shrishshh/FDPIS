@@ -1,4 +1,4 @@
-import type { ModelPerformance } from "@/lib/types";
+import type { ModelPerformance, RuleProfileId } from "@/lib/types";
 import { apiGet } from "@/lib/api/client";
 
 interface RawPerf {
@@ -17,6 +17,20 @@ interface RawPerf {
     note: string;
     rows: { carrier: string; test_flights: number; precision: number; base_rate: number; lift: number }[];
   };
+  weather?: {
+    source: string; promoted: boolean; verdict: string;
+    rows: { variant: "baseline" | "upper_bound" | "honest"; label: string; deployable: boolean;
+            note: string; auc: number; pr_auc: number; f1: number; p1: number; p5: number;
+            p10: number; carrier_weighted_p1: number }[];
+  } | null;
+  layer5?: {
+    source: string; test_dates: string; note: string; default_seed_on?: string;
+    recall_sets?: { profile: string; alert_set: string; label: string; actual_breaches: number;
+                    alerts: number; actionable_recall: number | null; precision: number | null }[];
+    three_band?: { split: string; profile: string; likely_rate: number | null;
+                   watch_rate: number | null; no_alert_rate: number | null }[];
+    rows: Record<string, string | number | null>[];
+  } | null;
   limitations: string[];
 }
 
@@ -99,6 +113,65 @@ export async function getModelPerformance(): Promise<ModelPerformance> {
         precision: p.precision, baseRate: p.base_rate, lift: p.lift,
       })),
     },
+    weather: r.weather
+      ? {
+          source: r.weather.source,
+          promoted: r.weather.promoted,
+          verdict: r.weather.verdict,
+          rows: r.weather.rows.map((w) => ({
+            variant: w.variant, label: w.label, deployable: w.deployable, note: w.note,
+            auc: w.auc, prAuc: w.pr_auc, f1: w.f1,
+            precisionAt1: w.p1, precisionAt5: w.p5, precisionAt10: w.p10,
+            carrierWeightedPrecisionAt1: w.carrier_weighted_p1,
+          })),
+        }
+      : null,
+    layer5: r.layer5
+      ? {
+          source: r.layer5.source,
+          testDates: r.layer5.test_dates,
+          defaultSeedOn: (r.layer5.default_seed_on === "departure" ? "departure" : "arrival"),
+          recallSets: (r.layer5.recall_sets ?? []).map((x) => ({
+            profile: x.profile as RuleProfileId,
+            alertSet: x.alert_set as "a_likely_only" | "b_likely_plus_watch_upper" | "c_all_alerts",
+            label: x.label,
+            actualBreaches: x.actual_breaches,
+            alerts: x.alerts,
+            actionableRecall: x.actionable_recall,
+            precision: x.precision,
+          })),
+          threeBand: (r.layer5.three_band ?? []).map((b) => ({
+            split: (b.split === "validation" ? "validation" : "test") as "validation" | "test",
+            profile: b.profile as RuleProfileId,
+            likelyRate: b.likely_rate,
+            watchRate: b.watch_rate,
+            noAlertRate: b.no_alert_rate,
+          })),
+          note: r.layer5.note,
+          rows: r.layer5.rows.map((x) => {
+            const v = (k: string) => (x[k] === null || x[k] === undefined ? null : Number(x[k]));
+            return {
+              seedOn: (x.seed_on === "departure" ? "departure" : "arrival") as "arrival" | "departure",
+              isDefault: Boolean(x.default),
+              profile: String(x.profile) as RuleProfileId,
+              ruleId: String(x.rule_id),
+              rule: String(x.rule),
+              actualBreaches: Number(x.actual_breaches),
+              precisionLikely: v("precision_likely"),
+              recallAnyAlert: v("recall_any_alert"),
+              recallActionable: v("recall_actionable"),
+              engineLpPrecision: v("engine_lp_precision"),
+              engineLpRecall: v("engine_lp_recall"),
+              naivePrecisionAtEngineRecall: v("naive_precision_at_engine_recall"),
+              naiveRecall: v("naive_recall"),
+              naivePrecision: v("naive_precision"),
+              enginePrecisionAtNaiveRecall: v("engine_precision_at_naive_recall"),
+              medianLeadMin: v("median_lead_min"),
+              shareDeadlinePassed: v("share_deadline_passed"),
+            };
+          }),
+        }
+      : null,
     limitations: r.limitations,
     // Derived from `classifier` so the landing page has one source of truth too.
     headline: [

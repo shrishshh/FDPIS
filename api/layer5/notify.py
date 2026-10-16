@@ -1,0 +1,79 @@
+"""Simulated crew notification outbox.
+
+NOTHING IS SENT. No SMS gateway, email service or push provider is integrated.
+A notification here is a record of what WOULD be sent, written to an in-memory
+list that dies with the process. Recipients are ROLES ("Standby crew, base ORD"),
+never people: crew rosters are not public, so there is nobody to address.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from threading import Lock
+
+STATUS = "SIMULATED — not sent"
+NOTICE = ("Simulated notification. No SMS, email or push service is connected and no "
+          "message has left this system. Recipients are roles, not people, because airline "
+          "crew rosters are not public.")
+
+_OUTBOX: list[dict] = []
+_LOCK = Lock()
+
+_WHAT = {
+    "crew_fdp_limit": "Projected FDP exceedance",
+    "crew_fdp_extension_limit": "Projected FDP beyond the maximum extension - crew change required",
+    "crew_duty_period_limit": "Projected duty-period exceedance",
+}
+
+
+def compose(alert: dict) -> tuple[str, str, str]:
+    """(recipient_role, channel, message) for a crew alert."""
+    f = alert.get("flight") or {}
+    st = alert.get("deadline_station") or f.get("origin") or "?"
+    when = alert.get("deadline_local") or "--:--"
+    if alert["rule_id"] == "crew_min_rest":
+        role = f"Operating crew, tail {alert['tail']}"
+        msg = (f"Operating crew {alert['tail']}: projected rest before your next report at {st} "
+               f"is below the minimum under {alert['profile_name']}. Expect reassignment; "
+               f"confirm availability by {when} local. Ref alert #{alert['id']}.")
+        return role, "crew app push", msg
+    role = f"Standby crew, base {st}"
+    leg = f"leg {f.get('leg_num')} ({f.get('origin')}-{f.get('dest')})" if f else "the rotation"
+    what = _WHAT.get(alert["rule_id"], alert["rule_id"])
+    if alert["severity"] == "WATCH":
+        tail_note = ("watch - not quantified" if alert.get("watch_reason") == "beyond_depth_2"
+                     else "watch - upper bound only")
+        what = f"Possible {what[0].lower()}{what[1:]} ({tail_note})"
+    msg = (f"Standby crew {st}: report by {when} local. {what} on {alert['tail']} {leg} "
+           f"under {alert['profile_name']}. Ref alert #{alert['id']}.")
+    return role, "SMS", msg
+
+
+def create(alert: dict) -> dict:
+    if alert.get("category") != "crew":
+        raise ValueError("only crew alerts can generate a crew notification")
+    if alert.get("status") == "deadline_passed":
+        raise ValueError("the action deadline had already passed when this alert fired "
+                         f"(usable lead {alert.get('usable_lead_minutes')} min); notifying a "
+                         "crew now would be useless")
+    role, channel, msg = compose(alert)
+    with _LOCK:
+        rec = {
+            "notification_id": len(_OUTBOX) + 1,
+            "alert_id": alert["id"],
+            "recipient_role": role,
+            "channel": channel,
+            "message": msg,
+            "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "status": STATUS,
+            "simulated": True,
+            "notice": NOTICE,
+            "alert": {k: alert.get(k) for k in ("rule_id", "severity", "tail", "date",
+                                                "profile", "deadline_local", "deadline_station")},
+        }
+        _OUTBOX.append(rec)
+    return rec
+
+
+def outbox() -> list[dict]:
+    with _LOCK:
+        return list(reversed(_OUTBOX))

@@ -3,7 +3,6 @@ import type {
 } from "@/lib/types";
 import { apiGet, apiPost } from "@/lib/api/client";
 import { getRotation } from "@/lib/api/rotations";
-import { buildRecommendations } from "@/lib/api/recommendations";
 
 interface RawHop {
   depth: number;
@@ -119,7 +118,6 @@ async function assemble(raw: RawPropagate): Promise<Cascade> {
       confidenceDepth: raw.summary.confidence_depth,
     },
     confidenceDepth: raw.summary.confidence_depth,
-    recommendations: buildRecommendations(nodes),
   };
 }
 

@@ -1,0 +1,168 @@
+{
+  "profile": "dgca_fdtl",
+  "name": "DGCA CAR Section 7 Series J Part III (flight crew FDTL) + CAR Section 3 Series M Part IV (passenger facilitation)",
+  "short_name": "DGCA FDTL",
+  "jurisdiction": "India",
+  "applies_to": "The Indian target market. Applied to the US demo dataset only to show what the same day would look like under Indian rules - US carriers are not subject to it.",
+  "researched_on": "2026-10-16",
+  "primary_sources": [
+    {
+      "document": "CAR Section 7 Series J Part III, Issue III dated 24 April 2019, REV 1 dated 8 Jan 2024 - Duty Period, Flight Duty Period, Flight Time Limitations and Prescribed Rest Periods: Flight crew engaged in Scheduled Air Transport Operations",
+      "url": "https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=YUKKrHOBzBr0RZyThH2OXw%3D%3D",
+      "retrieved_via": "Official DGCA digigov portal PDF (17 pages)"
+    },
+    {
+      "document": "Same CAR, REV 2 dated 26 Mar 2024",
+      "url": "https://images.assettype.com/barandbench/2025-12-05/t1ej91il/DGCA_CAR_.pdf",
+      "retrieved_via": "THIRD-PARTY MIRROR (Bar & Bench). No copy on dgca.gov.in was found. Text-diffed against the official REV 1: the only substantive change is para 2.2 (removes the 01 June 2024 compliance deadline). Every numeric limit used below is identical in both and is cited from the official REV 1."
+    },
+    {
+      "document": "CAR Section 3 Series M Part IV, Issue I dated 6 Aug 2010, Rev. 4 dated 25 Jan 2023 (effective 15 Feb 2023) - Facilities to be provided to passengers by airlines due to denied boarding, cancellation of flights and delays in flights",
+      "url": "https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=we1PSlOuQhYdHcwKKrm7ew%3D%3D",
+      "retrieved_via": "Official DGCA digigov portal PDF (8 pages)"
+    }
+  ],
+  "proxy": {
+    "report_buffer_minutes": {
+      "value": 60,
+      "regulatory_value": null,
+      "source": "CAR 7-J-III para 3.14 'Reporting Time: the time at which flight crew member is required by an operator to report for duty' and para 4.1.1: the operator defines pre-flight time in its approved FDTL Scheme.",
+      "verified": true,
+      "notes": "Verified that the CAR leaves the reporting buffer to each operator's DGCA-approved Scheme. 60 minutes is an ASSUMPTION."
+    },
+    "post_flight_buffer_minutes": {
+      "value": 15,
+      "regulatory_value": null,
+      "source": "CAR 7-J-III para 4.1.2: a standard post-flight allowance 'shall be added at the end of flight time - to be counted as Duty', specified in the operator's Scheme.",
+      "verified": true,
+      "notes": "Regulation requires the allowance but leaves its length to the operator; 15 minutes is an assumption. Counted as duty (para 6.2 duty-period limit, para 10.1 rest), not as FDP."
+    },
+    "standby_callout_minutes": {
+      "value": 90,
+      "regulatory_value": null,
+      "source": "None. Standby response times are operator-defined.",
+      "verified": false,
+      "notes": "Lead time between calling a standby crew and their report. Used only for the action deadline. Assumption."
+    },
+    "acclimatized": {
+      "value": true,
+      "source": "CAR 7-J-III para 3.1 and para 6.1 Note 2 (6.1.4 applies within the acclimatized zone)",
+      "verified": true,
+      "notes": "Domestic operations: crew assumed acclimatized to the first departure airport's time zone."
+    }
+  },
+  "rules": [
+    {
+      "id": "crew_fdp_limit",
+      "category": "crew",
+      "kind": "crew_fdp",
+      "description": "Maximum flight duty period, two-pilot operation, by number of landings; reduced to 10:00 with at most 2 landings when the duty encroaches night duty (00:00-06:00).",
+      "comparator": "gt",
+      "threshold": {
+        "type": "dgca_6_1",
+        "day_fdp_minutes_by_landings": {"1": 780, "2": 780, "3": 750, "4": 720, "5": 690, "6": 660},
+        "max_landings_day": 6,
+        "night_duty": {"window_local": ["0000", "0600"], "fdp_minutes": 600, "max_landings": 2}
+      },
+      "unit": "minutes",
+      "source": "CAR Section 7 Series J Part III, REV 1 (8 Jan 2024), para 6.1 table (6.1.1: flight time 8 h, FDP 11:00/11:30/12:00/12:30 for 6/5/4/3 landings; 6.1.2: 9 h, 13:00, 2 landings; 6.1.4: night duty 8 h, 10:00, 2 landings), para 6.1 Notes 1-2, and para 3.11 'Night Duty'. https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=YUKKrHOBzBr0RZyThH2OXw%3D%3D",
+      "verified": true,
+      "notes": "Table read in PDF content-stream order (layout extraction scrambles it). Interpretation: 6.1.3 (10 h flight time, 13:00 FDP, 1 landing) applies per Note 1 only to night duty BEYOND the acclimatized zone, so a domestic single-landing day uses 6.1.2 (13:00). Night duty (para 3.11) = any duty period encroaching 00:00-06:00 acclimatized time; it is evaluated on the PROJECTED duty window, so a delay that pushes duty past midnight lowers the limit to 10:00 and the landing cap to 2. More than 6 landings (day) or 2 (night) is itself a breach. Not modelled: the WOCL reduction in Note 2 to para 7 (it cites para 6.1.3 and 7.1, i.e. non-domestic/augmented); cargo Note 3."
+    },
+    {
+      "id": "crew_fdp_extension_limit",
+      "category": "crew",
+      "kind": "crew_fdp_extended",
+      "description": "FDP limit plus the maximum extension for unforeseen operational circumstances. Beyond this the crew cannot operate.",
+      "comparator": "gt",
+      "threshold": {"type": "base_plus", "base_rule": "crew_fdp_limit", "plus_minutes": 120},
+      "unit": "minutes",
+      "source": "CAR Section 7 Series J Part III, REV 1, para 16.1(b): 'FDP by maximum of 02 hours.' https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=YUKKrHOBzBr0RZyThH2OXw%3D%3D",
+      "verified": true,
+      "notes": "Not modelled: 16.1(d) cumulative cap of 8 h FDP extension in 28 days (needs crew history); 16.1(e)/(f) rest increase of 2 h / 4 h after an extension. Interpretation flag: Note 1 to para 16 says 'Provisions of only para 8.1 to 8.4 can be extended by the limits specified in 16.1(a) and 16.1(b)' - para 8 is the CUMULATIVE limits table. Read literally that restricts what 16.1 extends; this engine follows the plain wording of 16.1 ('Flight Duty Period ... may be extended') and flags the ambiguity here."
+    },
+    {
+      "id": "crew_duty_period_limit",
+      "category": "crew",
+      "kind": "crew_duty",
+      "description": "Maximum duty period in 24 hours: no more than one hour beyond the maximum allowable FDP.",
+      "comparator": "gt",
+      "threshold": {"type": "base_plus", "base_rule": "crew_fdp_limit", "plus_minutes": 60},
+      "unit": "minutes",
+      "source": "CAR Section 7 Series J Part III, REV 1, para 6.2: 'The maximum duty period during any 24 hours shall not be more than one hour beyond maximum allowable Flight Duty Period as stated in Para 6.1 and Para 7.' https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=YUKKrHOBzBr0RZyThH2OXw%3D%3D",
+      "verified": true,
+      "notes": "Duty = report time to projected block-in plus the post-flight allowance (para 4.1.2)."
+    },
+    {
+      "id": "crew_flight_time_limit",
+      "category": "crew",
+      "kind": "crew_flight_time",
+      "description": "Maximum flight time in 24 hours, paired with the FDP row: 8 h for 3-6 landings, 9 h for up to 2 landings, 8 h for night duty.",
+      "comparator": "gt",
+      "threshold": {"type": "dgca_6_1_flight_time", "by_landings_minutes": {"1": 540, "2": 540, "3": 480, "4": 480, "5": 480, "6": 480}, "night_minutes": 480},
+      "unit": "minutes",
+      "source": "CAR Section 7 Series J Part III, REV 1, para 6.1.1, 6.1.2, 6.1.4. https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=YUKKrHOBzBr0RZyThH2OXw%3D%3D",
+      "verified": true,
+      "notes": "Evaluated against SCHEDULED block time only, to test whether the single-crew proxy is plausible for a rotation. Never raises a delay alert."
+    },
+    {
+      "id": "crew_min_rest",
+      "category": "crew",
+      "kind": "crew_rest",
+      "description": "Minimum rest before a flight duty period: at least as long as the preceding duty period, or 12 hours, whichever is greater.",
+      "comparator": "lt",
+      "threshold": {"type": "max_of", "minutes": 720, "or_preceding_duty": true},
+      "unit": "minutes",
+      "source": "CAR Section 7 Series J Part III, REV 1, para 10.1 (a) and (b)(i). https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=YUKKrHOBzBr0RZyThH2OXw%3D%3D",
+      "verified": true,
+      "notes": "Domestic: the 18 h / 36 h time-zone-crossing values (10.1(b)(ii)-(iii)) do not apply. Evaluated only when the same aircraft operates on the next date in the dataset. Weekly rest (10.6, 48 h incl. two local nights) and consecutive-night limits (13) need crew history and are not modelled."
+    },
+    {
+      "id": "pax_meals_refreshments",
+      "category": "passenger",
+      "kind": "pax_departure_delay",
+      "description": "Meals and refreshments in relation to waiting time, when a delay beyond the scheduled departure is expected: 2 h or more for block time up to 2.5 h; 3 h or more for block time over 2.5 h up to 5 h; 4 h or more otherwise.",
+      "comparator": "gte",
+      "threshold": {"type": "by_block_time", "rows": [
+        {"max_block_minutes": 150, "delay_minutes": 120},
+        {"max_block_minutes": 300, "delay_minutes": 180},
+        {"max_block_minutes": null, "delay_minutes": 240}
+      ]},
+      "unit": "minutes",
+      "source": "CAR Section 3 Series M Part IV, Rev. 4 (25 Jan 2023), para 3.4.1(a)-(c) and para 3.8.1(a). https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=we1PSlOuQhYdHcwKKrm7ew%3D%3D",
+      "verified": true,
+      "notes": "The PDF's '2 1/2 hrs' fraction glyph does not survive text extraction (it renders as a replacement character); 2.5 h is read from the visible structure '2 [glyph] hrs ... more than 2 [glyph] hrs and up to 5 hours'. Block time = BTS scheduled elapsed time (para 2.9 defines block time). Not owed for extraordinary circumstances (para 3.4.4) - the engine cannot tell cause, so it flags all."
+    },
+    {
+      "id": "pax_alternate_or_refund",
+      "category": "passenger",
+      "kind": "pax_departure_delay",
+      "description": "Domestic flight expected to be delayed more than 6 hours: offer an alternate flight within 6 hours or a full refund.",
+      "comparator": "gt",
+      "threshold": 360,
+      "unit": "minutes",
+      "source": "CAR Section 3 Series M Part IV, Rev. 4, para 3.4.2. https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=we1PSlOuQhYdHcwKKrm7ew%3D%3D",
+      "verified": true,
+      "notes": "'more than 6 hrs' - strictly greater. Applies to delays against the published schedule; delays notified more than 24 h in advance are not modelled."
+    },
+    {
+      "id": "pax_hotel_accommodation",
+      "category": "passenger",
+      "kind": "pax_departure_delay",
+      "description": "Hotel accommodation (including transfers) when total delay is more than 24 hours, or more than 6 hours for flights scheduled to depart between 20:00 and 03:00.",
+      "comparator": "gt",
+      "threshold": {"type": "by_departure_window", "default_minutes": 1440, "window_local": ["2000", "0300"], "window_minutes": 360},
+      "unit": "minutes",
+      "source": "CAR Section 3 Series M Part IV, Rev. 4, para 3.4.3 and para 3.8.1(b). https://www.dgca.gov.in/digigov-portal/Upload?flag=iframeAttachView&attachId=we1PSlOuQhYdHcwKKrm7ew%3D%3D",
+      "verified": true,
+      "notes": "Window taken as scheduled departure local time >= 20:00 or < 03:00. Whether 03:00 itself is inside the window is ambiguous in the text; treated as outside."
+    }
+  ],
+  "not_encoded": [
+    {"rule": "CAR 7-J-III para 8 cumulative limits (35/65/100/300/1000 h flight time; 60/100/190/600/1800 h duty)", "reason": "Requires individual crew history; rosters are not public."},
+    {"rule": "CAR 7-J-III para 10.6 weekly rest (48 h incl. two local nights) and para 13 consecutive night operations", "reason": "Requires multi-day crew history."},
+    {"rule": "CAR 7-J-III Note 2 to para 7 (WOCL reduction of max FDP)", "reason": "The note cites para 6.1.3 and 7.1 (night beyond the acclimatized zone, and augmented crew), neither of which applies to the domestic two-pilot days in the demo."},
+    {"rule": "2025 phased implementation dates and operator-specific DGCA exemptions/dispensations to the 2024 FDTL", "reason": "Found only in secondary sources (news, blogs); no primary DGCA text located. Not encoded. REV 2 para 2.2 lets operators continue under Issue III (2019) until their new scheme is approved - which scheme a given operator flies under cannot be determined from public data."},
+    {"rule": "CAR 3-M-IV compensation amounts for cancellation/denied boarding (paras 3.2, 3.3)", "reason": "Out of scope: the engine handles delay facilitation, not cancellation compensation."}
+  ]
+}

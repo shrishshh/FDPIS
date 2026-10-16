@@ -2,7 +2,143 @@
 
 These are the current PRODUCTION figures (32-feature model). Sources are named
 so each number can be traced back to the notebook that produced it.
+
+The weather block is read from notebook 7's saved comparison rather than copied,
+so it cannot drift from the experiment that produced it.
 """
+import csv
+from pathlib import Path
+
+WEATHER_COMPARISON = (Path(__file__).resolve().parent.parent
+                      / "results" / "candidates" / "weather_b" / "comparison.csv")
+
+# comparison.csv row label -> (variant, display label, deployable, note)
+_WEATHER_ROWS = {
+    "BASELINE (32 production)": ("baseline", "Production (32 features)", True,
+                                 "Deployed model. No weather."),
+    "+ WEATHER A (upper bound)": ("upper_bound", "+ Weather at departure", False,
+                                  "Upper bound - not deployable. Uses the actual weather at the "
+                                  "scheduled departure hour, i.e. a perfect forecast."),
+    "+ WEATHER B (honest)": ("honest", "+ Weather 3 h before", True,
+                             "Honest: only observations available 3 h before departure."),
+}
+
+
+def _weather():
+    if not WEATHER_COMPARISON.exists():
+        return None
+    rows = []
+    with WEATHER_COMPARISON.open(newline="", encoding="utf-8") as fh:
+        for r in csv.DictReader(fh):
+            meta = _WEATHER_ROWS.get(r[""])
+            if meta is None:
+                continue                       # delta rows: the UI derives deltas itself
+            rows.append({"variant": meta[0], "label": meta[1], "deployable": meta[2],
+                         "note": meta[3], "auc": float(r["auc"]), "pr_auc": float(r["pr_auc"]),
+                         "f1": float(r["f1"]), "p1": float(r["p@1%"]), "p5": float(r["p@5%"]),
+                         "p10": float(r["p@10%"]),
+                         "carrier_weighted_p1": float(r["carrier_wtd_p@1%"])})
+    return {
+        "source": "fdpis_7_weather.ipynb -> results/candidates/weather_b/comparison.csv",
+        "promoted": False,
+        "verdict": ("Not promoted: Variant B changes AUC by -0.0014 and p@1% by -0.022, failing "
+                    "the promotion rule (AUC >= +0.005 and p@1% no worse than -0.010)."),
+        "rows": rows,
+    }
+
+
+LAYER5_DIR = Path(__file__).resolve().parent.parent / "results" / "layer5"
+
+
+def _recall_sets(seed_on):
+    """Actionable FDP recall / precision for the three nested alert sets (test split)."""
+    path = LAYER5_DIR / "recall_precision_sets.csv"
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as fh:
+        rows = [r for r in csv.DictReader(fh) if r["seed_on"] == seed_on and r["split"] == "test"]
+
+    def f(v):
+        return None if v in ("", None, "nan") else float(v)
+    return [{"profile": r["profile"], "alert_set": r["alert_set"], "label": r["alert_set_label"],
+             "actual_breaches": int(float(r["actual_breaches"])), "alerts": int(float(r["alerts"])),
+             "actionable_recall": f(r["actionable_recall"]), "precision": f(r["precision"]),
+             "actionable_precision": f(r["actionable_precision"])} for r in rows]
+
+
+def _three_band(seed_on):
+    """LIKELY / WATCH / no-alert breach rates (validation and test) for one seed mode."""
+    path = LAYER5_DIR / "three_band.csv"
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as fh:
+        rows = [r for r in csv.DictReader(fh) if r["seed_on"] == seed_on]
+
+    def f(v):
+        return None if v in ("", None, "nan") else float(v)
+    return [{"split": r["split"], "profile": r["profile"], "likely_rate": f(r["LIKELY_rate"]),
+             "watch_rate": f(r["WATCH_rate"]), "no_alert_rate": f(r["NO_ALERT_rate"])}
+            for r in sorted(rows, key=lambda r: (r["split"] != "validation", r["profile"]))]
+_L5_RULES = {"crew_fdp_limit": "FDP limit", "crew_min_rest": "Minimum rest",
+             "crew_fdp_extension_limit": "FDP + max extension",
+             "crew_duty_period_limit": "Duty period limit"}
+
+
+def _layer5():
+    """Layer 5 backtest (api/layer5/backtest.py, test dates only), read from its CSVs."""
+    files = {k: LAYER5_DIR / f"{k}.csv" for k in
+             ("actionable_metrics", "naive_comparison", "lead_time_summary", "backtest_meta")}
+    if not all(p.exists() for p in files.values()):
+        return None
+
+    def read(name):
+        with files[name].open(newline="", encoding="utf-8") as fh:
+            return list(csv.DictReader(fh))
+
+    def f(v):
+        return None if v in ("", None) else float(v)
+
+    from .layer5.feed import DEFAULT_SEED_ON
+
+    def key(r):
+        return (r.get("seed_on", "arrival"), r["profile"], r["rule_id"])
+    act = {key(r): r for r in read("actionable_metrics")}
+    nai = {key(r): r for r in read("naive_comparison")}
+    lead = {key(r): r for r in read("lead_time_summary")}
+    meta = read("backtest_meta")[0]
+    rows = []
+    for (seed_on, prof, rid), a in act.items():
+        if rid not in _L5_RULES:
+            continue
+        n, l = nai.get((seed_on, prof, rid), {}), lead.get((seed_on, prof, rid), {})
+        rows.append({
+            "seed_on": seed_on, "default": seed_on == DEFAULT_SEED_ON,
+            "profile": prof, "rule_id": rid, "rule": _L5_RULES[rid],
+            "actual_breaches": int(float(a["actual_breaches"])),
+            "precision_likely": f(a["precision_likely"]),
+            "recall_any_alert": f(a["recall_any_alert"]),
+            "recall_actionable": f(a.get("recall_actionable", a.get("recall_LP_actionable"))),
+            "recall_likely_actionable": f(a.get("recall_likely_actionable")),
+            "engine_lp_precision": f(n.get("engine_LP_precision")),
+            "engine_lp_recall": f(n.get("engine_LP_recall")),
+            "naive_precision_at_engine_recall": f(n.get("naive_precision_at_engine_LP_recall")),
+            "naive_recall": f(n.get("naive_recall")),
+            "naive_precision": f(n.get("naive_precision")),
+            "engine_precision_at_naive_recall": f(n.get("engine_precision_at_matched_recall")),
+            "median_lead_min": f(l.get("median")),
+            "share_deadline_passed": f(l.get("share_lead_le_0")),
+        })
+    return {
+        "source": "api/layer5/backtest.py -> results/layer5/*.csv",
+        "test_dates": meta["test_dates"],
+        "default_seed_on": DEFAULT_SEED_ON,
+        "three_band": _three_band(DEFAULT_SEED_ON),
+        "recall_sets": _recall_sets(DEFAULT_SEED_ON),
+        "note": ("Test split only: Layer 4 never saw these dates. Recall counts only alerts "
+                 "whose action deadline was still ahead when the seed delay became known."),
+        "rows": rows,
+    }
+
 
 PERFORMANCE = {
     "model_version": "32-feature production (encodings removed 2026-09-13)",
@@ -86,9 +222,12 @@ PERFORMANCE = {
             {"carrier": "MQ", "test_flights": 9814,  "precision": 0.276, "base_rate": 0.090, "lift": 3.07},
         ],
     },
+    "weather": _weather(),
+    "layer5": _layer5(),
     "limitations": [
-        "No weather features are integrated. Convective and low-visibility events are "
-        "the largest unmodelled source of variance.",
+        "Weather tested (notebook 7): observations available 3h before departure did not "
+        "improve the model (AUC −0.0014). A perfect forecast would add +0.009 AUC and "
+        "+4.5 points of p@1%, so archived forecast data (TAF) is the open lever.",
         "Trained on US domestic data only. Indian network adaptation is pending a "
         "carrier data partnership.",
         "Propagation is quantitative to depth 2 only. Beyond that the system reports "
