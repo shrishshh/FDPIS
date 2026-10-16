@@ -10,6 +10,7 @@ historical dataset the models were trained and tested on. That is deliberate
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Optional
@@ -50,13 +51,94 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+def _allowed_origins() -> list[str]:
+    """Deployment: ALLOWED_ORIGINS is a comma-separated list (the Vercel domain and
+    http://localhost:3000). Unset, the local-dev defaults in config apply."""
+    raw = os.environ.get("ALLOWED_ORIGINS", "")
+    origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+    return origins or config.CORS_ORIGINS
+
+
+# Largest JSON body any endpoint accepts. The biggest real request (a propagate or
+# recommendation payload) is well under 1 KB.
+MAX_BODY_BYTES = 16 * 1024
+
+
+class BodySizeLimit:
+    """Reject request bodies over MAX_BODY_BYTES with 413, whether or not the client
+    sends Content-Length (chunked bodies are counted as they stream in)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        for k, v in scope.get("headers", []):
+            if k == b"content-length" and v.isdigit() and int(v) > MAX_BODY_BYTES:
+                return await _too_large(send)
+        seen = 0
+
+        async def limited_receive():
+            nonlocal seen
+            msg = await receive()
+            if msg["type"] == "http.request":
+                seen += len(msg.get("body", b""))
+                if seen > MAX_BODY_BYTES:
+                    raise _BodyTooLarge()
+            return msg
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _BodyTooLarge:
+            await _too_large(send)
+
+
+class _BodyTooLarge(HTTPException):
+    # An HTTPException so FastAPI's body parser re-raises it as a 413 instead of
+    # wrapping it in a generic 400.
+    def __init__(self):
+        super().__init__(413, "request body too large")
+
+
+async def _too_large(send):
+    body = b'{"detail":"request body too large"}'
+    await send({"type": "http.response.start", "status": 413,
+                "headers": [(b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
+app.add_middleware(BodySizeLimit)
+
+
+class TrimHeapAfterRequest:
+    """Deployment on a 512 MB host (MALLOC_TRIM_AFTER_REQUEST=1): hand memory
+    freed by a request back to the OS once the response is sent. Without it glibc
+    keeps the alert feed's ~70 MB working set resident after every computation."""
+
+    def __init__(self, app):
+        self.app = app
+        from .slim import release_heap
+        self.release = release_heap
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if scope["type"] == "http":
+                self.release(collect=False)
+
+
+if os.environ.get("MALLOC_TRIM_AFTER_REQUEST") == "1":
+    app.add_middleware(TrimHeapAfterRequest)
 
 
 def bundle():
@@ -88,16 +170,23 @@ def _opt(v):
 @app.get("/api/health", response_model=schemas.Health)
 def health():
     b = bundle()
-    dates = np.sort(b.df["FL_DATE"].unique())
+    meta = getattr(b, "dataset_meta", None)
+    if meta:    # slim deployment: describe the whole dataset, as the full API does
+        rows, dmin, dmax, dcount = (meta["parquet_rows"], meta["date_min"],
+                                    meta["date_max"], meta["date_count"])
+    else:
+        dates = np.sort(b.df["FL_DATE"].unique())
+        rows, dmin, dmax, dcount = (int(len(b.df)), str(pd.Timestamp(dates[0]).date()),
+                                    str(pd.Timestamp(dates[-1]).date()), len(dates))
     return schemas.Health(
         status="ok",
         models_loaded=["layer3_classifier", "layer4_gate",
                        "layer4_hurdle_lower", "layer4_hurdle_median",
                        "layer4_hurdle_upper"],
-        parquet_rows=int(len(b.df)),
-        date_min=str(pd.Timestamp(dates[0]).date()),
-        date_max=str(pd.Timestamp(dates[-1]).date()),
-        date_count=len(dates),
+        parquet_rows=rows,
+        date_min=dmin,
+        date_max=dmax,
+        date_count=dcount,
         layer3_feature_count=len(config.LAYER3_FEATURES),
         layer4_feature_count=len(b.prop_features),
         gate_threshold=b.gate_threshold,
@@ -121,6 +210,9 @@ def dates():
 @app.get("/api/carriers", response_model=list[schemas.CarrierCount])
 def carriers():
     b = bundle()
+    meta = getattr(b, "dataset_meta", None)
+    if meta:
+        return [schemas.CarrierCount(carrier=c, flights=n) for c, n in meta["carriers"]]
     g = b.df.groupby("OP_UNIQUE_CARRIER").size().sort_values(ascending=False)
     return [schemas.CarrierCount(carrier=str(c), flights=int(n)) for c, n in g.items()]
 
@@ -131,7 +223,8 @@ def performance():
 
 
 # ------------------------------------------------------------- briefing ---
-@lru_cache(maxsize=config.BRIEFING_CACHE_SIZE)
+# Deployment on a 512 MB host lowers this (each cached full day is ~6.5 MB).
+@lru_cache(maxsize=int(os.environ.get("BRIEFING_CACHE_SIZE", config.BRIEFING_CACHE_SIZE)))
 def _scored_day(date_str: str, carrier: str | None) -> pd.DataFrame:
     """Score one day once, then cache. Keyed by (date, carrier) per design."""
     b = bundle()

@@ -66,22 +66,33 @@ export function ErrorState({
   );
 }
 
+const LOCAL_API = /localhost|127\.0\.0\.1/.test(API_BASE_URL);
+
 export function ApiUnreachable({ onRetry }: { onRetry?: () => void }) {
   return (
     <div className="flex flex-col items-start gap-3 rounded-xl border border-[#f2ddab] bg-[#fdf4e0] px-5 py-4">
       <div className="flex items-center gap-2.5">
         <PlugZap className="h-[18px] w-[18px] text-[#8a5d00]" aria-hidden />
         <p className="text-sm font-semibold text-[#8a5d00]">
-          The FDPIS API is not reachable
+          The FDPIS model server is not reachable
         </p>
       </div>
-      <p className="text-sm leading-relaxed text-[#8a5d00]/90">
-        Nothing is listening at <code className="font-mono">{API_BASE_URL}</code>.
-        Start the backend from the project root:
-      </p>
-      <pre className="w-full overflow-x-auto rounded-md bg-ink-900 px-3 py-2 text-xs text-white">
+      {LOCAL_API ? (
+        <>
+          <p className="text-sm leading-relaxed text-[#8a5d00]/90">
+            Nothing is listening at <code className="font-mono">{API_BASE_URL}</code>.
+            Start the backend from the project root:
+          </p>
+          <pre className="w-full overflow-x-auto rounded-md bg-ink-900 px-3 py-2 text-xs text-white">
 uvicorn api.main:app --reload
-      </pre>
+          </pre>
+        </>
+      ) : (
+        <p className="text-sm leading-relaxed text-[#8a5d00]/90">
+          The model server did not answer within three minutes. It may be restarting;
+          please retry in a minute.
+        </p>
+      )}
       {onRetry ? (
         <button type="button" onClick={onRetry} className="btn-secondary h-9">
           <RefreshCw className="h-3.5 w-3.5" aria-hidden />

@@ -10,12 +10,12 @@ export function ScopeBar() {
     useScope();
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="ml-auto flex min-w-0 items-center gap-1.5 sm:gap-2">
       <label className="flex items-center gap-1.5">
-        <Calendar className="h-3.5 w-3.5 text-ink-400" aria-hidden />
+        <Calendar className="hidden h-3.5 w-3.5 text-ink-400 sm:block" aria-hidden />
         <span className="sr-only">Operating date</span>
         <select
-          className="field h-9 w-[9.5rem] text-xs"
+          className="field h-9 w-[7.75rem] text-xs sm:w-[9.5rem]"
           value={date}
           onChange={(e) => setDate(e.target.value)}
           disabled={dates.length === 0}
@@ -32,7 +32,7 @@ export function ScopeBar() {
       <label>
         <span className="sr-only">Carrier</span>
         <select
-          className="field h-9 w-[8.5rem] text-xs"
+          className="field h-9 w-[6.5rem] text-xs sm:w-[8.5rem]"
           value={carrier}
           onChange={(e) => setCarrier(e.target.value)}
           disabled={carriers.length === 0}
@@ -63,7 +63,8 @@ function ConnectionBadge({
     ? `Connected to the FDPIS API. Serving real model predictions over historical ` +
       `flights from ${period} — ${formatCount(health?.parquetRows ?? 0)} records. ` +
       `This is not a live operational feed.`
-    : "The FDPIS API is not reachable. Start the backend with: uvicorn api.main:app --reload";
+    : "The FDPIS model server is not reachable yet. If it was asleep it is starting up; " +
+      "this takes about a minute.";
 
   return (
     <span
@@ -82,10 +83,9 @@ function ConnectionBadge({
         <>
           <Database className="h-3 w-3" aria-hidden />
           <span className="hidden lg:inline">Historical data</span>
-          <span className="lg:hidden">Live API</span>
         </>
       ) : (
-        "API offline"
+        <span className="hidden sm:inline">API offline</span>
       )}
     </span>
   );

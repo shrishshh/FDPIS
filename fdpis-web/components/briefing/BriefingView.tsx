@@ -179,7 +179,7 @@ export function BriefingView() {
               />
             </div>
           ) : (
-            <div className="overflow-x-auto scrollbar-slim">
+            <div className="relative overflow-x-auto scrollbar-slim">
               <table className="w-full min-w-[1080px] border-collapse">
                 <thead><HeadRow /></thead>
                 <tbody>
@@ -202,7 +202,7 @@ export function BriefingView() {
                 <span className="tnum font-normal text-ink-400">({formatCount(remainder.length)})</span>
               </h2>
             </div>
-            <div className="max-h-[70vh] overflow-auto scrollbar-slim">
+            <div className="relative max-h-[70vh] overflow-auto scrollbar-slim">
               <table className="w-full min-w-[1080px] border-collapse">
                 <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_#e4e7e9]"><HeadRow /></thead>
                 <tbody>

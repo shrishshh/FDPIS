@@ -17,6 +17,10 @@ NOTICE = ("Simulated notification. No SMS, email or push service is connected an
 
 _OUTBOX: list[dict] = []
 _LOCK = Lock()
+# The API is public: the outbox keeps at most this many records, oldest dropped
+# first. It is never written to disk.
+OUTBOX_MAX = 200
+_NEXT_ID = 1
 
 _WHAT = {
     "crew_fdp_limit": "Projected FDP exceedance",
@@ -55,10 +59,11 @@ def create(alert: dict) -> dict:
         raise ValueError("the action deadline had already passed when this alert fired "
                          f"(usable lead {alert.get('usable_lead_minutes')} min); notifying a "
                          "crew now would be useless")
+    global _NEXT_ID
     role, channel, msg = compose(alert)
     with _LOCK:
         rec = {
-            "notification_id": len(_OUTBOX) + 1,
+            "notification_id": _NEXT_ID,
             "alert_id": alert["id"],
             "recipient_role": role,
             "channel": channel,
@@ -70,7 +75,9 @@ def create(alert: dict) -> dict:
             "alert": {k: alert.get(k) for k in ("rule_id", "severity", "tail", "date",
                                                 "profile", "deadline_local", "deadline_station")},
         }
+        _NEXT_ID += 1
         _OUTBOX.append(rec)
+        del _OUTBOX[:-OUTBOX_MAX]
     return rec
 
 

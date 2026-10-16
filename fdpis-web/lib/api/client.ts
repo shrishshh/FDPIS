@@ -37,7 +37,7 @@ export class ApiError extends Error {
 
 function describe(status: number, detail?: string): string {
   if (status === 0) {
-    return `Cannot reach the FDPIS API at ${API_BASE_URL}. Is the backend running?`;
+    return `Cannot reach the FDPIS model server at ${API_BASE_URL}. Please try again in a minute.`;
   }
   if (detail) return detail;
   if (status === 404) return "Not found.";
@@ -46,18 +46,86 @@ function describe(status: number, detail?: string): string {
   return `Request failed with status ${status}.`;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  let res: Response;
+/* ------------------------------------------------------------ cold start
+ * The hosted backend sleeps when idle; the first request after that waits while
+ * the container starts and loads the models (about a minute). Until the server
+ * has answered once, a request that fails at the network level, gets a gateway
+ * error (502/503/504) or takes longer than WAKE_NOTICE_MS puts the app in the
+ * "waking" state, and failed requests are retried with backoff for up to
+ * WAKE_BUDGET_MS. <WakeBanner> renders the state.
+ */
+
+export type ServerState = "unknown" | "waking" | "up" | "unavailable";
+
+const WAKE_NOTICE_MS = 5_000;
+const WAKE_BUDGET_MS = 180_000;
+const RETRYABLE_STATUS = new Set([502, 503, 504]);
+
+let serverState: ServerState = "unknown";
+let wakeStartedAt: number | null = null;
+const listeners = new Set<() => void>();
+
+function setServerState(s: ServerState) {
+  if (s === serverState) return;
+  serverState = s;
+  if (s === "waking" && wakeStartedAt === null) wakeStartedAt = Date.now();
+  listeners.forEach((l) => l());
+}
+
+export function getServerState(): ServerState {
+  return serverState;
+}
+
+export function getWakeStartedAt(): number | null {
+  return wakeStartedAt;
+}
+
+export function subscribeServerState(l: () => void): () => void {
+  listeners.add(l);
+  return () => listeners.delete(l);
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** One attempt. Resolves to a Response, or null when the network failed. */
+async function attempt(path: string, init?: RequestInit): Promise<Response | null> {
+  const notice =
+    serverState === "up" ? null : setTimeout(() => setServerState("waking"), WAKE_NOTICE_MS);
   try {
-    res = await fetch(`${API_BASE_URL}${path}`, {
+    return await fetch(`${API_BASE_URL}${path}`, {
       ...init,
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
       cache: "no-store",
     });
   } catch {
     // Network-level failure: DNS, refused connection, CORS preflight blocked.
-    throw new ApiError(describe(0), 0);
+    return null;
+  } finally {
+    if (notice) clearTimeout(notice);
   }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // A simulated notification is the one write; never send it twice.
+  const retryable = !path.endsWith("/notify");
+  const started = Date.now();
+  let delay = 2_000;
+  let res: Response;
+  for (;;) {
+    const r = await attempt(path, init);
+    if (r !== null && !RETRYABLE_STATUS.has(r.status)) {
+      res = r;
+      break;
+    }
+    if (!retryable || serverState === "up" || Date.now() - started + delay > WAKE_BUDGET_MS) {
+      if (serverState !== "up") setServerState("unavailable");
+      throw new ApiError(describe(r ? r.status : 0), r ? r.status : 0);
+    }
+    setServerState("waking");
+    await sleep(delay);
+    delay = Math.min(delay * 1.5, 15_000);
+  }
+  setServerState("up");
 
   if (!res.ok) {
     let detail: string | undefined;

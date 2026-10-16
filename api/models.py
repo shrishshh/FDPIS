@@ -8,6 +8,7 @@ this design is meant to prevent.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,6 +70,12 @@ class ModelBundle:
 
 def load_bundle() -> ModelBundle:
     """Load every artifact once. Raises StartupError if anything is untrustworthy."""
+    # Deployment on a small-memory host serves precomputed slim artifacts
+    # (api/slim.py). Same bundle, same constants, test-split days only.
+    if os.environ.get("FDPIS_SLIM_DIR"):
+        from .slim import load
+        return load(os.environ["FDPIS_SLIM_DIR"])
+
     for p in [config.DATA_PARQUET, config.LAYER3_MODEL, config.LAYER4_CONFIG,
               config.GATE_MODEL, *config.HURDLE_MODELS.values()]:
         if not p.exists():

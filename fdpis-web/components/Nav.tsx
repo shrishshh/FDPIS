@@ -19,12 +19,18 @@ export function Nav() {
 
   return (
     <header className="sticky top-0 z-40 border-b border-ink-200 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/75">
-      <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-6 px-5 lg:px-8">
+      {/* Below lg the header wraps: logo + scope controls on the first row, the
+          nav on a second row that scrolls sideways inside itself, so the page
+          never scrolls horizontally on a phone. */}
+      <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-6 gap-y-1 px-4 pt-2 sm:px-5 lg:h-16 lg:flex-nowrap lg:px-8 lg:pt-0">
         <Link href="/" className="shrink-0 rounded-lg" aria-label="FDPIS home">
           <Logo />
         </Link>
 
-        <nav className="flex flex-1 items-center gap-1" aria-label="Primary">
+        <nav
+          className="order-last -mx-1 flex w-full items-center gap-1 overflow-x-auto px-1 pb-2 lg:order-none lg:mx-0 lg:w-auto lg:flex-1 lg:overflow-visible lg:px-0 lg:pb-0"
+          aria-label="Primary"
+        >
           {LINKS.map(({ href, label, icon: Icon }) => {
             const active = pathname === href || pathname.startsWith(`${href}/`);
             return (
@@ -32,7 +38,7 @@ export function Nav() {
                 key={href}
                 href={href}
                 aria-current={active ? "page" : undefined}
-                className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150 ${
+                className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150 ${
                   active
                     ? "bg-accent-50 text-accent-700"
                     : "text-ink-600 hover:bg-ink-100 hover:text-ink-900"

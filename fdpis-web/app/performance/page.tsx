@@ -450,7 +450,8 @@ export default function PerformancePage() {
                 {formatDecimal(validation.precision, 3)}
               </p>
               <p className="mt-2 text-sm text-ink-500">
-                When FDPIS calls a cascade, DOT attribution agrees 89% of the time.
+                When FDPIS calls a cascade, DOT attribution agrees{" "}
+                {Math.round(validation.precision * 100)}% of the time.
               </p>
             </div>
             <div className="card card-pad">

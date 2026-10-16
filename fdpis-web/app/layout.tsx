@@ -3,6 +3,8 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { Nav } from "@/components/Nav";
 import { DataScopeProvider } from "@/components/DataScope";
+import { SiteFooter } from "@/components/SiteFooter";
+import { WakeBanner } from "@/components/WakeBanner";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -26,7 +28,9 @@ export default function RootLayout({
       <body className="min-h-screen antialiased">
         <DataScopeProvider>
           <Nav />
+          <WakeBanner />
           <main>{children}</main>
+          <SiteFooter />
         </DataScopeProvider>
       </body>
     </html>
