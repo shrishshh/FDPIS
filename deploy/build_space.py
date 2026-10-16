@@ -60,6 +60,10 @@ def main():
     env = {k: v for k, v in os.environ.items() if k != "FDPIS_SLIM_DIR"}
     subprocess.run([sys.executable, "-m", "api.slim", "build", str(ARTIFACTS / "slim")],
                    cwd=ROOT, env=env, check=True)
+    # Default alert feeds, computed by the serving code on the slim bundle in a
+    # fresh process (fresh alert registry), exactly as the server would.
+    subprocess.run([sys.executable, "-m", "api.slim", "feeds", str(ARTIFACTS / "slim")],
+                   cwd=ROOT, env={**env, "FDPIS_SLIM_DIR": str(ARTIFACTS / "slim")}, check=True)
     for f in sorted((ARTIFACTS / "slim").iterdir()):
         print(f"{f.stat().st_size / 1e6:9.3f} MB  artifacts/slim/{f.name}")
 

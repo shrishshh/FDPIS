@@ -36,6 +36,12 @@ async def lifespan(app: FastAPI):
     log.info("loading models and flight data ...")
     STATE["bundle"] = load_bundle()
     b = STATE["bundle"]
+    # Slim deployment: default day feeds precomputed at build time (api/slim.py).
+    STATE["feeds"] = {}
+    if os.environ.get("FDPIS_SLIM_DIR"):
+        from .slim import load_feeds
+        STATE["feeds"] = load_feeds(os.environ["FDPIS_SLIM_DIR"])
+        log.info("precomputed alert feeds: %d", len(STATE["feeds"]))
     log.info("loaded %s flights | layer3 %d features | layer4 %d features | gate %.2f",
              f"{len(b.df):,}", len(config.LAYER3_FEATURES), len(b.prop_features),
              b.gate_threshold)
@@ -491,6 +497,10 @@ def alerts(date: str = Query(..., description="YYYY-MM-DD"),
         raise HTTPException(422, f"crew_model must be one of {layer5.CREW_MODELS}")
     if seed_on is not None and seed_on not in layer5_feed.SEED_MODES:
         raise HTTPException(422, f"seed_on must be one of {layer5_feed.SEED_MODES}")
+    pinned = STATE.get("feeds", {}).get(
+        (profile, date, carrier, crew_model, seed_on or layer5_feed.DEFAULT_SEED_ON))
+    if pinned is not None:
+        return pinned
     try:
         return layer5_feed.day_feed(bundle(), profile, date, carrier, crew_model, seed_on)
     except KeyError as e:

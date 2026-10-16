@@ -209,7 +209,82 @@ def load(slim_dir: Path):
     return bundle
 
 
+# ------------------------------------------------------- precomputed feeds ---
+# On the free host an uncached day feed takes 25-45 s. The default feeds (every
+# served day x both profiles, all carriers, one crew per aircraft, default seed)
+# are therefore computed once at build time - by this same code on the slim
+# bundle, in a fresh process - and served from a pinned table. The alert
+# registry those feeds created is saved with them so alert ids, and therefore
+# POST /api/alerts/{id}/notify, behave exactly as in a process that computed them.
+FEEDS_FILE = "feeds.json.gz"
+FEED_PROFILES = ("faa_part117", "dgca_fdtl")
+
+
+def _jsonable(o):
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, (np.floating,)):
+        return float(o)
+    if isinstance(o, np.bool_):
+        return bool(o)
+    if isinstance(o, (pd.Timestamp, np.datetime64)):
+        return pd.Timestamp(o).isoformat()
+    raise TypeError(f"not JSON-serialisable: {type(o).__name__}")
+
+
+def precompute_feeds(slim_dir: Path) -> None:
+    """Run in a fresh process with FDPIS_SLIM_DIR=slim_dir (see build_space.py)."""
+    import gzip
+    from .layer5 import engine, feed
+
+    b = load(slim_dir)
+    meta = json.loads((Path(slim_dir) / "meta.json").read_text())
+    feeds = []
+    for date in meta["served_days"]:
+        for profile in FEED_PROFILES:
+            f = feed.day_feed(b, profile, date, None, "single", None)
+            feeds.append({"key": [profile, date, None, "single", feed.DEFAULT_SEED_ON],
+                          "feed": f})
+            print(f"  feed {date} {profile}: {len(f['alerts'])} alerts", flush=True)
+    reg = engine.REGISTRY
+    payload = {"feeds": feeds,
+               "registry": {"ids": reg._ids,
+                            "alerts": {str(k): v for k, v in reg._alerts.items()}}}
+    with gzip.open(Path(slim_dir) / FEEDS_FILE, "wt", encoding="utf-8") as fh:
+        json.dump(payload, fh, default=_jsonable, separators=(",", ":"))
+
+
+def load_feeds(slim_dir) -> dict[tuple, dict]:
+    """Pinned default feeds keyed like feed.day_feed's cache, and the alert
+    registry restored to the state that computed them. {} if not built."""
+    import gzip
+    from .layer5 import engine
+
+    path = Path(slim_dir) / FEEDS_FILE
+    if not path.exists():
+        return {}
+    with gzip.open(path, "rt", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    reg = engine.REGISTRY
+    alerts = {int(k): v for k, v in payload["registry"]["alerts"].items()}
+    with reg._lock:
+        reg._ids.update(payload["registry"]["ids"])
+        reg._alerts.update(alerts)
+    out = {}
+    for item in payload["feeds"]:
+        f = item["feed"]
+        # Share alert objects with the registry, as a live computation does.
+        f["alerts"] = [alerts[a["id"]] for a in f["alerts"]]
+        out[tuple(item["key"])] = f
+    del payload
+    release_heap()
+    return out
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] != "build":
-        sys.exit("usage: python -m api.slim build <out_dir>")
-    build(Path(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == "build":
+        build(Path(sys.argv[2]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "feeds":
+        precompute_feeds(Path(sys.argv[2]))
+    else:
+        sys.exit("usage: python -m api.slim build|feeds <dir>")

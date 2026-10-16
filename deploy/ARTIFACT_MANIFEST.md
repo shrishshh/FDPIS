@@ -39,13 +39,14 @@ and `deploy/build_space.py` in sync.
 | `slim/lk_origin_hour.parquet` | 0.03 MB | expected-primary lookup (notebook 5), computed from the **training** split |
 | `slim/lk_carrier_hour.parquet` | 0.01 MB | ditto |
 | `slim/lk_route.parquet` | 0.06 MB | ditto |
+| `slim/feeds.json.gz` | 0.38 MB | The 26 default alert feeds (13 days × FAA/DGCA, all carriers, one crew per aircraft, default seed) plus the alert registry that produced them. They are computed at build time by the serving code on the slim bundle in a fresh process. The API serves them pinned, at about 35 ms instead of 25–45 s on the free CPU, and Notify on their alert ids works. Parity against live computation on all 13 days: 318 comparisons, 0 different (`deploy/parity_pinned.txt`). |
 | `slim/meta.json` | 0.01 MB | Startup constants computed by the real `load_bundle()` on the full data: Layer 3 category levels, recovery rate, primary mean/median/shrink, train/val split dates, out-of-vocabulary counts, dataset-wide health and carrier counts |
 | `results/layer4/config.json` | 0.01 MB | Layer 4 features, category levels, gate threshold |
 | `results/candidates/weather_b/comparison.csv` | <0.01 MB | `/api/performance` weather section |
 | `results/layer5/{actionable_metrics,naive_comparison,lead_time_summary,backtest_meta,three_band,recall_precision_sets}.csv` | <0.01 MB each | `/api/performance` Layer 5 sections |
 | `api/layer5/rules/{faa_part117,dgca_fdtl}.json` | (code) | rule engine |
 
-Total: **44.6 MB** (43 MB on disk). The full build used 135.8 MB.
+Total: **45.1 MB** with `feeds.json.gz`. The full build used 135.8 MB.
 
 ## Test image only (`deploy/backend/Dockerfile.test`; files in gitignored `deploy/backend/testdata/`)
 

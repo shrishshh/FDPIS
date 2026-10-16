@@ -90,8 +90,12 @@ Measured on the live service (2026-10-16):
   and `/api/health` never stopped answering.
 - **Cold start:** after 18 minutes idle (spun down), the first request took
   **42.7 s**. Requests after that answer in 0.2–0.4 s.
-- **Latency:** an uncached day feed takes 25 s (FAA) and 43 s (DGCA) on the
-  free CPU. After that the 32-entry feed cache answers instantly.
+- **Latency:** an uncached day feed took 25 s (FAA) and 43 s (DGCA) on the
+  free CPU. The 26 default feeds are now precomputed at build time
+  (`slim/feeds.json.gz`, pinned at startup, about +17 MB RSS) and answer in
+  tens of milliseconds. Only non-default variants (a carrier filter,
+  `inferred_blocks`, `seed_on=arrival`) are computed live and then held in the
+  32-entry cache.
 
 Rule changes (`api/layer5/rules/*.json`) and code changes need a rebuild.
 Model or data changes also need `python deploy/build_space.py`. If the xgboost
