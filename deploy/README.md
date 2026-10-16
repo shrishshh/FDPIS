@@ -161,6 +161,17 @@ waits for the container to start and load the models: about 3 s locally, and
 In a real-time test (the backend started 20 s after the page), the banner
 appeared and content rendered at 27 s.
 
+On the live site (2026-10-16), after the backend had been idle for 17 minutes,
+https://fdpis.vercel.app showed the banner and rendered content at **43.8 s**,
+with 0 failed requests and 0 console errors. Warm pages render in 0.7–3.7 s.
+
+Live-site check, `node deploy/verify_site.mjs https://fdpis.vercel.app deploy/screenshots`:
+- All 6 pages at 1440 px and 390 px: 0 console errors, 0 failed requests and
+  0 px horizontal overflow.
+- `/alerts`: FAA shows 65 rows and DGCA 51. Acknowledge → Notify writes a
+  "SIMULATED — not sent" record to the outbox.
+- Screenshots are in `deploy/screenshots/` (cold run in `cold/`).
+
 ## Where each token is used
 
 | Token | Used by | Where it lives |
