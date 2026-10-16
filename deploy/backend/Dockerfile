@@ -1,11 +1,12 @@
-# FDPIS API for a 512 MB host (Render free). Build context: deploy/backend/,
-# assembled by `python deploy/build_space.py`.
+# FDPIS API for a 512 MB host (Render free).
 #
-#   docker build -t fdpis-api .                 # runtime image (what Render runs)
-#   docker build --target test -t fdpis-test .  # + scikit-learn and parity files
-#   docker run --rm fdpis-test                  # test_parity + layer5 tests
+# Build context: the REPOSITORY ROOT. Code comes from api/, data from the
+# committed deploy/backend/artifacts/ (rebuild with `python deploy/build_space.py`).
+#
+#   docker build -f deploy/backend/Dockerfile -t fdpis-api .
+#   docker build -f deploy/backend/Dockerfile.test -t fdpis-test . && docker run --rm fdpis-test
 
-FROM python:3.11-slim AS base
+FROM python:3.11-slim
 
 # libgomp1: OpenMP runtime for the xgboost wheel.
 RUN apt-get update \
@@ -15,11 +16,11 @@ RUN apt-get update \
 RUN useradd --create-home --uid 1000 app
 WORKDIR /home/app/fdpis
 
-COPY requirements.txt .
+COPY deploy/backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=app:app results/ results/
-COPY --chown=app:app slim/ slim/
+COPY --chown=app:app deploy/backend/artifacts/results/ results/
+COPY --chown=app:app deploy/backend/artifacts/slim/ slim/
 COPY --chown=app:app api/ api/
 
 # FDPIS_SLIM_DIR: serve the precomputed slim artifacts (api/slim.py).
@@ -37,16 +38,6 @@ ENV FDPIS_SLIM_DIR=/home/app/fdpis/slim \
     BRIEFING_CACHE_SIZE=8 \
     MALLOC_TRIM_AFTER_REQUEST=1
 
-
-FROM base AS test
-COPY requirements-test.txt .
-RUN pip install --no-cache-dir -r requirements-test.txt
-COPY --chown=app:app testdata/results/ results/
-USER app
-CMD ["sh", "-c", "python -m api.test_parity && python -m unittest api.layer5.test_rules"]
-
-
-FROM base AS runtime
 USER app
 EXPOSE 10000
 # Render injects PORT (default 10000).

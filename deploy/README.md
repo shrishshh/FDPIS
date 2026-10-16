@@ -37,17 +37,21 @@ Parity with the full API is proven, not assumed:
 - `python deploy/compare_apis.py <full> <slim> --served-subset` covers every
   served date: 318 comparisons, 0 differences. The only intended change is that
   `/api/dates` lists 13 days.
-- `docker build --target test` followed by `docker run` executes
-  `api/test_parity.py` and the 38 Layer 5 tests against the slim artifacts.
+- The test image (`deploy/backend/Dockerfile.test`) runs `api/test_parity.py`
+  and the 38 Layer 5 tests against the slim artifacts.
 
 ### Build and test locally
 
+The Docker build context is the **repository root**. The image copies its code
+from `api/`, so no second copy of the code exists, and its data from the
+committed `deploy/backend/artifacts/`.
+
 ```bash
-python deploy/build_space.py              # copies api/ + results, builds deploy/backend/slim/
-cd deploy/backend
-docker build --target test -t fdpis-test . && docker run --rm --memory=512m fdpis-test
-docker build --target runtime -t fdpis-api .
-sh ../measure_container.sh fdpis-api 7863 # peak RSS under a 512 MB limit
+python deploy/build_space.py              # rebuilds deploy/backend/artifacts/ (+ testdata/)
+docker build -f deploy/backend/Dockerfile -t fdpis-api .
+docker build -f deploy/backend/Dockerfile.test -t fdpis-test .
+docker run --rm --memory=512m fdpis-test  # test_parity + 38 layer5 tests
+sh deploy/measure_container.sh fdpis-api 7863   # peak RSS under a 512 MB limit
 ```
 
 The full local API (`uvicorn api.main:app --port 8000`, no `FDPIS_SLIM_DIR`) is
@@ -55,22 +59,22 @@ the reference for `compare_apis.py`.
 
 ### Deploy / redeploy on Render
 
-The image contains the slim data and model artifacts. They are gitignored and
-must not be committed, so Render runs a **prebuilt image from a registry**
-rather than building from this repository.
+`deploy/backend/artifacts/` (19 files, about 45 MB, none over 10 MB) is
+committed, with explicit `.gitignore` exceptions. Render therefore builds
+straight from the public GitHub repo. The full `data/` and `results/` are never
+committed.
 
-1. Push the runtime image to a public registry:
-   ```bash
-   docker tag fdpis-api <registry>/<user>/fdpis-api:<tag>
-   docker push <registry>/<user>/fdpis-api:<tag>
-   ```
-2. Render service: name `fdpis-api`, type *Web Service*, runtime *Image*, image
-   `<registry>/<user>/fdpis-api:<tag>`, region *Singapore*, plan *Free*,
-   health check `/api/health`.
-3. Environment: `ALLOWED_ORIGINS=https://<vercel-domain>,http://localhost:3000`.
-   Everything else is baked into the image. Render injects `PORT`.
-4. Redeploy after a change: rebuild, push a new tag, then point the service at
-   it (dashboard or Render API `PATCH /v1/services/{id}`) and trigger a deploy.
+The service is `fdpis-api`:
+- web service, Docker runtime, Free plan, Singapore region;
+- repo `shrishshh/FDPIS`, branch `main`, Dockerfile `deploy/backend/Dockerfile`,
+  build context `.` (repo root);
+- health check `/api/health`, auto-deploy on;
+- environment: `ALLOWED_ORIGINS` (comma-separated). Everything else is baked
+  into the image, and Render injects `PORT`.
+
+To redeploy, push to `main`; auto-deploy rebuilds the image. To change
+`ALLOWED_ORIGINS`, use the dashboard (Environment) or the Render API
+(`PUT /v1/services/{id}/env-vars`, then `POST /v1/services/{id}/deploys`).
 
 Rule changes (`api/layer5/rules/*.json`) and code changes need a rebuild.
 Model or data changes also need `python deploy/build_space.py`. If the xgboost
@@ -80,7 +84,7 @@ version changes, the `test` stage must pass before deploying.
 
 1. Re-run the notebooks or `api/layer5/backtest.py` that produce the changed
    `results/` files.
-2. Run `python deploy/build_space.py`, which rebuilds `slim/` from the full data
+2. Run `python deploy/build_space.py`, which rebuilds `deploy/backend/artifacts/` from the full data
    by calling the real `load_bundle()`.
 3. Run the `test` stage and `compare_apis.py --served-subset` against a full
    local API, then redeploy.
@@ -142,7 +146,6 @@ appeared and content rendered at 27 s.
 |---|---|---|
 | `RENDER_API_KEY` | Creating/updating the Render service and its env vars via `api.render.com` | Your shell environment only |
 | `VERCEL_TOKEN` | `npx vercel ... --token` for deploys and project env vars | Your shell environment only |
-| Registry credential (Docker Hub access token or GitHub PAT with `write:packages`) | `docker push` of the backend image | `docker login` credential store |
 
 No token is written to any file in this repo, passed to the containers, or
 committed.

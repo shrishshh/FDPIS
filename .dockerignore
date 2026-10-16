@@ -1,0 +1,7 @@
+# Docker build context is the repo root (deploy/backend/Dockerfile). Send only
+# what the images copy: api/ and deploy/backend/.
+*
+!api/
+!deploy/backend/
+**/__pycache__
+**/*.pyc

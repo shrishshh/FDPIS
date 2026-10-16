@@ -1,0 +1,13 @@
+split,seed_on,profile,rule_id,alert_set,alert_set_label,actual_breaches,alerts,actionable_alerts,actionable_recall,precision,actionable_precision
+validation,departure,dgca_fdtl,crew_fdp_limit,a_likely_only,LIKELY only,693,250,245,0.31024531024531027,0.88,0.8775510204081632
+validation,departure,dgca_fdtl,crew_fdp_limit,b_likely_plus_watch_upper,LIKELY + WATCH upper_bound_only,693,401,395,0.42857142857142855,0.7556109725685786,0.7518987341772152
+validation,departure,dgca_fdtl,crew_fdp_limit,c_all_alerts,all alerts (incl. WATCH beyond_depth_2),693,472,466,0.481962481962482,0.7203389830508474,0.7167381974248928
+validation,departure,faa_part117,crew_fdp_limit,a_likely_only,LIKELY only,788,235,231,0.2626903553299492,0.8978723404255319,0.8961038961038961
+validation,departure,faa_part117,crew_fdp_limit,b_likely_plus_watch_upper,LIKELY + WATCH upper_bound_only,788,380,376,0.3629441624365482,0.7631578947368421,0.7606382978723404
+validation,departure,faa_part117,crew_fdp_limit,c_all_alerts,all alerts (incl. WATCH beyond_depth_2),788,488,483,0.44289340101522845,0.7254098360655737,0.722567287784679
+test,departure,dgca_fdtl,crew_fdp_limit,a_likely_only,LIKELY only,427,169,166,0.3255269320843091,0.8402366863905325,0.8373493975903614
+test,departure,dgca_fdtl,crew_fdp_limit,b_likely_plus_watch_upper,LIKELY + WATCH upper_bound_only,427,260,257,0.41217798594847777,0.6884615384615385,0.6848249027237354
+test,departure,dgca_fdtl,crew_fdp_limit,c_all_alerts,all alerts (incl. WATCH beyond_depth_2),427,319,316,0.4847775175644028,0.658307210031348,0.6550632911392406
+test,departure,faa_part117,crew_fdp_limit,a_likely_only,LIKELY only,540,192,190,0.3,0.8489583333333334,0.8526315789473684
+test,departure,faa_part117,crew_fdp_limit,b_likely_plus_watch_upper,LIKELY + WATCH upper_bound_only,540,300,298,0.37592592592592594,0.68,0.6812080536912751
+test,departure,faa_part117,crew_fdp_limit,c_all_alerts,all alerts (incl. WATCH beyond_depth_2),540,408,405,0.4648148148148148,0.6176470588235294,0.6197530864197531

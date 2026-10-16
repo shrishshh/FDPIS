@@ -1,0 +1,17 @@
+# Test image: the runtime image plus scikit-learn and the two parity-test files
+# (deploy/backend/testdata/, gitignored, written by deploy/build_space.py).
+# Runs api/test_parity.py and the Layer 5 tests against the slim artifacts.
+# test_parity rebuilds the Layer 3 reference through the sklearn wrapper, so it
+# also proves the raw-Booster serving path matches it.
+#
+#   docker build -f deploy/backend/Dockerfile -t fdpis-api .
+#   docker build -f deploy/backend/Dockerfile.test -t fdpis-test .
+#   docker run --rm --memory=512m fdpis-test
+
+FROM fdpis-api
+USER root
+COPY deploy/backend/requirements-test.txt .
+RUN pip install --no-cache-dir -r requirements-test.txt
+COPY --chown=app:app deploy/backend/testdata/results/ results/
+USER app
+CMD ["sh", "-c", "python -m api.test_parity && python -m unittest api.layer5.test_rules"]

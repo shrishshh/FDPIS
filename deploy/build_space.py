@@ -1,9 +1,11 @@
-"""Assemble deploy/backend/, the Docker build context for the hosted API.
+"""Build the hosted API's artifacts into deploy/backend/artifacts/.
 
-Copies the API code, the small result files the API reads, and builds the slim
-serving artifacts (api/slim.py) next to the committed Dockerfile and
-requirements. The copies are gitignored; only this script, the Dockerfile,
-requirements and docs are tracked. See deploy/ARTIFACT_MANIFEST.md.
+The Docker build context is the repository root: the image takes its code from
+api/ and its data from deploy/backend/artifacts/, which is COMMITTED (Render
+builds from the GitHub repo; about 45 MB, every file < 10 MB). It holds the slim
+serving set built by api/slim.py plus the small result files the API reads.
+Files only the test image needs go to deploy/backend/testdata/ (gitignored).
+See deploy/ARTIFACT_MANIFEST.md.
 
     python deploy/build_space.py
 """
@@ -16,7 +18,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CTX = ROOT / "deploy" / "backend"
+BACKEND = ROOT / "deploy" / "backend"
+ARTIFACTS = BACKEND / "artifacts"
+TESTDATA = BACKEND / "testdata"
 
 # Read at runtime by the slim deployment (besides slim/, built below).
 RUNTIME = [
@@ -35,8 +39,6 @@ TEST_ONLY = [
     "results/xgb_primary_classifier.json",
     "results/layer4/cascade_chains_integrated.parquet",
 ]
-# backtest.py writes results; it never runs in the deployment.
-API_EXCLUDE = {"backtest.py", "__pycache__", ".gitignore", "requirements.txt"}
 
 
 def copy(rel: str, dst_root: Path) -> int:
@@ -49,19 +51,17 @@ def copy(rel: str, dst_root: Path) -> int:
 
 
 def main():
-    for d in ("api", "results", "slim", "testdata", "data"):
-        shutil.rmtree(CTX / d, ignore_errors=True)
-    shutil.copytree(ROOT / "api", CTX / "api",
-                    ignore=lambda _d, names: [n for n in names if n in API_EXCLUDE])
+    for d in (ARTIFACTS, TESTDATA):
+        shutil.rmtree(d, ignore_errors=True)
     for rel in RUNTIME:
-        print(f"{copy(rel, CTX) / 1e6:9.3f} MB  {rel}")
+        print(f"{copy(rel, ARTIFACTS) / 1e6:9.3f} MB  artifacts/{rel}")
     for rel in TEST_ONLY:
-        print(f"{copy(rel, CTX / 'testdata') / 1e6:9.3f} MB  testdata/{rel}")
+        print(f"{copy(rel, TESTDATA) / 1e6:9.3f} MB  testdata/{rel}")
     env = {k: v for k, v in os.environ.items() if k != "FDPIS_SLIM_DIR"}
-    subprocess.run([sys.executable, "-m", "api.slim", "build", str(CTX / "slim")],
+    subprocess.run([sys.executable, "-m", "api.slim", "build", str(ARTIFACTS / "slim")],
                    cwd=ROOT, env=env, check=True)
-    for f in sorted((CTX / "slim").iterdir()):
-        print(f"{f.stat().st_size / 1e6:9.3f} MB  slim/{f.name}")
+    for f in sorted((ARTIFACTS / "slim").iterdir()):
+        print(f"{f.stat().st_size / 1e6:9.3f} MB  artifacts/slim/{f.name}")
 
 
 if __name__ == "__main__":

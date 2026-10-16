@@ -1,8 +1,10 @@
 # Artifact manifest: what the deployed API reads
 
 The hosted API targets a **512 MB** instance (Render free). It serves the full
-model stack from a *slim* artifact set built by `api/slim.py` and assembled into
-`deploy/backend/` by `python deploy/build_space.py`. Keep this file, `api/slim.py`
+model stack from a *slim* artifact set. `api/slim.py` builds it, and
+`python deploy/build_space.py` writes it to `deploy/backend/artifacts/`, which is
+**committed** (explicit `.gitignore` exceptions) so Render can build from the
+repo. Paths below are relative to that directory. Keep this file, `api/slim.py`
 and `deploy/build_space.py` in sync.
 
 ## How the list was established
@@ -45,7 +47,7 @@ and `deploy/build_space.py` in sync.
 
 Total: **44.6 MB** (43 MB on disk). The full build used 135.8 MB.
 
-## Test-stage only (`docker build --target test`)
+## Test image only (`deploy/backend/Dockerfile.test`; files in gitignored `deploy/backend/testdata/`)
 
 | File | Size | Read by |
 |---|---:|---|
