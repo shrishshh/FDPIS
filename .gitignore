@@ -57,3 +57,9 @@ results/
 !deploy/backend/artifacts/slim/meta.json
 # Test-image-only copies of full results files: never committed.
 deploy/backend/testdata/
+
+# Frontend config that the *.json rule above would otherwise hide. Without these
+# Vercel finds no Next.js dependency ("NEXT_NO_VERSION").
+!fdpis-web/package.json
+!fdpis-web/package-lock.json
+!fdpis-web/tsconfig.json
