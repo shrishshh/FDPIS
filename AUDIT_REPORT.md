@@ -4204,3 +4204,286 @@ on `POST /api/propagate`: the request field, the response field and its one call
 `simulateCascade`. That endpoint is unchanged by design. **No caller still sends it to
 `/api/recommendations`**, so nothing needed fixing. `api/README.md` gains a
 `/api/recommendations` example using `departure_delay`.
+
+---
+
+# WEATHER IN LAYER 4
+
+Run 2026-10-16 on branch `weather-l4`, created from tag `v-layer5-frozen`. New notebook:
+`fdpis_8_weather_propagation.ipynb` (28 cells, linear run, about 11 min). Candidates are in
+`results/candidates/weather_l4/`.
+
+**Safety checks.**
+
+- `results/layer5/` was first copied to `results/layer5_baseline_v-layer5-frozen/` and made
+  read-only. After the run, `diff -r` shows `results/layer5/` is still identical to it.
+- `results/layer4/` is untouched (still dated 09-13).
+- No earlier notebook and no API file was modified.
+
+**The claim tested.** An aircraft that is already late absorbs less of that lateness during a
+turnaround at an airport with bad weather *right now*. The weather that matters is at the
+turnaround airport X (the outbound leg's origin) at the time of the turnaround. Per hop:
+`S_eff = Slack − W(class)`, `P = max(0, A − S_eff)`, where `W` is the only new quantity.
+
+**What this is not.** It is a weather-adjusted version of the analytical slack model in the
+literature (Kafle & Zou 2016; Wang & Vaze's hybrid logistic + quantile approach). It is not
+novel. The only parts that are ours are the timing rule and the evaluation.
+
+**Timing — two variants, both reported:**
+
+| Variant | Weather at X | Status |
+|---|---|---|
+| **T-honest** | latest METAR at X at or before the inbound leg's **actual departure** (when the inbound delay is known and the prediction is made) | what we would report |
+| **T-upper** | METAR at X nearest the inbound leg's **actual arrival** (the turnaround itself) | upper bound, not deployable |
+
+**Timing checks.**
+
+- Inbound actual departure = scheduled departure (local → UTC via `airportsdata`) +
+  `DEP_DELAY`. Arrival = that + `CRS_ELAPSED_TIME` + (`ARR_DELAY` − `DEP_DELAY`).
+- `PREV_ARR_DELAY` equals the inbound leg's `ARR_DELAY` on 100% of candidates.
+- **Asserted on every row:** every T-honest observation is at or before the prediction time.
+  Its age is 0 min at minimum and 37 min at the median. At the actual turnaround, it is a
+  median 2 h 53 min old (p90 4 h 44 min).
+- T-upper observations sit a median 14 min (max 90 min) from the actual arrival.
+- Coverage is 99.74% for T-honest and 99.62% for T-upper.
+
+**Data source.** METAR came from notebook 7's cache, with no re-download. It was parsed with
+notebook 7's exact code (2.21M observations, 345 stations). The new hourly as-of table,
+`data/weather/hourly_station.parquet`, holds 1,755,360 station-hours. For each hour H it gives
+the latest observation at or before H:00, within 59 min, forward-filled for at most 2 h. A
+lookup for time t uses floor(t), so it can never return a later observation.
+
+**Weather class.** Defined once and used everywhere, in priority order:
+`TS` > `SN` > `IFR` (vis < 3 mi or ceiling < 1,000 ft) > `PRECIP` > `CLEAR`.
+
+## WL1. Join sanity check (notebook 7's test, re-run): PASS
+
+There are 201,679 candidates with cause codes; 15,882 have `WEATHER_DELAY > 0`. Weather at the
+turnaround airport:
+
+| Feature | Variant | WEATHER_DELAY > 0 | = 0 | Ratio |
+|---|---|---|---|---|
+| IFR | T-upper | 0.110 | 0.049 | 2.24× |
+| Thunder | T-upper | 0.158 | 0.016 | **9.83×** |
+| Visibility (mi) | T-upper | 8.76 | 9.50 | 0.92× |
+| Thunder | T-honest | 0.076 | 0.023 | 3.31× |
+
+The shift scan of the T-upper key (−8…+8 h) peaks at **+1 h** (10.18×), with 6.83× at 0 h.
+That is persistence just after the turnaround, not a timezone error (which would put the peak
+4–10 h away). The join is aligned.
+
+## WL2. Step 0: does the physical effect exist? (training dates ≤ 2025-07-04 only)
+
+**What is measured.** Residual `R = outbound DEP_DELAY − max(0, inbound ARR_DELAY −
+AVAILABLE_SLACK)`.
+
+- **Cells.** Inbound delay (15–30 / 30–60 / 60–120 / 120+) × slack (0–15 / 15–45 / 45–90 / 90+).
+- **Comparison.** Each class's mean minus `CLEAR`'s mean in the same cell, with 1,000-sample
+  bootstrap CIs. Full cell table: `step0_effect.csv`.
+- **Split into two parts:**
+  - **Late-aircraft part:** `PROPAGATED_MIN − max(0, A − S)`. This is notebook 3's own target,
+    on every candidate (uncoded = 0). It is the only part that bears on absorption.
+  - **WEATHER + NAS minutes:** fresh weather delay, which is Layer 3's job.
+- **`W(class)`.** The pooled late-aircraft excess vs `CLEAR`, weighted by the class's rows in
+  each cell. Cells with fewer than 200 class rows are shrunk to 0 by `n/(n+200)` (prior
+  strength: 200 pseudo-rows at 0).
+
+**Pooled excess vs `CLEAR`, minutes (95% bootstrap CI):**
+
+| Class | Rows (T-honest) | Total residual | **Late-aircraft: T-honest W** | Late-aircraft: T-upper W | WEATHER + NAS (fresh) |
+|---|---|---|---|---|---|
+| **TS** | 2,233 | +11.2 (8.9–13.3) | **+6.44 (5.17–7.81)** | +4.23 (3.52–4.94) | +10.1 (8.3–12.1) |
+| SN | 6,106 | +7.7 (6.1–9.3) | +1.30 (0.22–2.38) | +2.34 (1.17–3.47) | +14.7 (13.5–16.0) |
+| IFR | 8,606 | +2.8 (1.8–3.8) | +1.36 (0.75–1.92) | +1.57 (0.92–2.27) | +3.2 (2.5–3.9) |
+| PRECIP | 11,769 | +3.8 (2.7–5.1) | +1.14 (0.48–1.74) | +1.76 (1.14–2.36) | +4.2 (3.4–5.0) |
+
+**Gate: PASSED, for `TS` only.** T-honest `W` is 6.44 min, with a CI excluding 0 and a value
+≥ 5. Every other class has a real but small effect (1.1–1.4 min), below the 5-min bar.
+
+**What Step 0 shows.**
+
+- **Most of the weather effect at the turnaround is fresh delay, not lost absorption.**
+  - Snow adds 14.7 min of WEATHER/NAS delay but only 1.3 min of late-aircraft excess.
+  - Thunderstorms add 10.1 min of WEATHER/NAS delay and 6.4 min of late-aircraft excess.
+- **The absorption effect exists, and is clearest for thunderstorms.**
+- **Caveat: part of `W` may be attribution, not physics.** Late-aircraft minutes are only
+  coded when the outbound leg arrives 15+ min late, and bad weather makes that more likely. So
+  the absorption hypothesis is supported, but its size is an upper estimate.
+- **Oddity: T-honest TS (6.4) > T-upper TS (4.2).** This is plausibly because thunder reported
+  hours ahead marks days with longer, organised convection, rather than storms that have
+  passed by the turnaround. It is not investigated further.
+
+## WL3. Steps 1–3: baselines reproduced, six candidates
+
+**Baselines reproduced before any candidate ran.**
+
+- **Production Layer 4** (reloaded read-only from `results/layer4/`): all-candidates MAE
+  **7.666**, cascade MAE **8.353**, coverage 70.2%, gate AUC 0.927 at threshold 0.3. Within
+  ±0.05 of 7.67 / 8.35.
+- **A no-weather retrain** with notebook 3's hyperparameters reproduces production exactly
+  (identical metrics, identical model sizes). So every difference below is weather, not
+  training noise.
+- **Notebook 5's integration** reproduced to ±0.01 min: total-delay MAE by depth
+  20.87 / 31.88 / 35.15 / 38.66 / 39.91.
+
+**The candidates.** Each uses the train-only W table (T-honest: TS 6.44, SN 1.30, IFR 1.36,
+PRECIP 1.14, CLEAR 0; T-upper: TS 4.23, SN 2.34, IFR 1.57, PRECIP 1.76, CLEAR 0).
+
+- **R:** `S_eff` fed through the *production* hurdle in place of `AVAILABLE_SLACK`, with derived
+  slack features recomputed and no retraining. **R-analytic** is the pure `max(0, A − S_eff)`.
+- **M:** gate + 3 quantile models retrained on `PROP_FEATURES` + turnaround weather:
+  - features: class one-hot, visibility, ceiling, gust, precipitation, thunder, snow;
+  - notebook 3's hyperparameters;
+  - gate threshold re-derived on validation with notebook 3's rule (both variants select 0.3).
+- **H:** quantile models of `actual − R-analytic`:
+  - features: M's, plus the rule prediction and `W(class)`;
+  - monotone + on inbound delay, − on `AVAILABLE_SLACK`, + on `W`;
+  - final = rule + residual, clipped at 0; no gate.
+
+### Test dates (2025-07-19 → 07-31), 74,113 candidates
+
+`comparison.csv`
+
+| Candidate | MAE all | **MAE cascades** | Δ cascades | Gate AUC | Coverage | Width |
+|---|---|---|---|---|---|---|
+| **Production** | 7.666 | **8.353** | — | 0.927 | 70.2% | 11.8 |
+| Arithmetic (no weather) | 8.473 | 11.716 | +3.363 | — | 46.7% | 0 |
+| **R T-honest** | 7.706 | 8.360 | **+0.007** | 0.927 | 70.1% | 11.9 |
+| R T-upper | 7.690 | 8.338 | −0.015 | 0.928 | 70.2% | 11.9 |
+| R-analytic T-honest | 8.477 | 11.635 | +3.282 | — | 46.3% | 0 |
+| R-analytic T-upper | 8.455 | 11.601 | +3.248 | — | 46.3% | 0 |
+| **M T-honest** | 7.638 | 8.373 | **+0.020** | 0.927 | 70.3% | 11.8 |
+| M T-upper | 7.616 | 8.353 | 0.000 | 0.928 | 70.4% | 11.7 |
+| **H T-honest** | 6.933 | 10.910 | **+2.556** | — | 84.7% | 18.6 |
+| H T-upper | 6.924 | 10.762 | +2.409 | — | 84.7% | 18.6 |
+
+**H is a different trade-off, not an improvement.** With no gate, its median sits near the rule
+for every row. That lowers all-candidates MAE (−0.73) and brings coverage close to the 80%
+target, but it raises cascade MAE by 2.4–2.6 min. That is the wrong direction for the rows
+Layer 4 exists to predict.
+
+### Cascade MAE by **actual** turnaround class (T-upper class used for every candidate)
+
+`segments.csv`. The test dates (late July) contain **no snow**.
+
+| Candidate | CLEAR (65,514) | TS (1,776) | IFR (870) | PRECIP (4,431) |
+|---|---|---|---|---|
+| Production | 8.30 | 8.20 | 6.90 | 7.73 |
+| R T-honest | 8.31 (+0.00) | 8.26 (+0.06) | 6.84 (−0.06) | 7.78 (+0.05) |
+| M T-honest | 8.33 (+0.03) | 8.30 (+0.11) | 6.61 (−0.29) | 7.77 (+0.05) |
+| H T-honest | 10.84 (+2.53) | 11.70 (+3.51) | 10.07 (+3.18) | 10.47 (+2.74) |
+| R T-upper | 8.30 (+0.00) | 7.88 (**−0.31**) | 6.71 (−0.19) | 7.69 (−0.04) |
+| M T-upper | 8.37 (+0.07) | 7.42 (**−0.78**) | 6.60 (−0.30) | 7.55 (−0.18) |
+| H T-upper | 10.82 (+2.51) | 9.30 (+1.10) | 9.66 (+2.77) | 10.00 (+2.27) |
+
+**The bad-weather rows tell the story.**
+
+- **Knowing the weather at the actual turnaround (T-upper) helps on thunderstorm rows:**
+  M −0.78 min and R −0.31 min of cascade MAE.
+- **Knowing only the weather when the prediction is made (T-honest) does not:** M +0.11, R
+  +0.06 on the same rows.
+- The only honest gain anywhere is M T-honest on IFR rows, −0.29. That is 870 rows, one class,
+  and not enough to move the headline.
+
+### Multi-hop (notebook 5's integration, each candidate plugged in)
+
+`multihop.csv`. T-honest uses each downstream turnaround's observation as of the seed time
+(the seed leg's actual departure), so it gets staler with depth.
+
+| Candidate | Depth 1 | Depth 2 | Depth 3 | Depth 4 | Depth 5 |
+|---|---|---|---|---|---|
+| Production | 20.87 | 31.88 | 35.15 | 38.66 | 39.91 |
+| R T-honest | 20.86 | 31.91 | 35.18 | 38.68 | 39.96 |
+| R T-upper | 20.86 | 31.87 | 35.15 | 38.64 | 39.94 |
+| M T-honest | 20.87 | 31.90 | 35.12 | 38.55 | 39.76 |
+| M T-upper | 20.82 | 31.79 | 35.05 | 38.61 | 39.70 |
+| H T-honest | 22.06 | 31.76 | 33.71 | 36.13 | 36.70 |
+| H T-upper | 21.82 | 31.52 | 33.58 | 36.02 | 36.62 |
+
+**Staleness (T-honest vs T-upper).** The gap is small at every depth for R and M (≤ 0.1 min).
+Weather hardly moves these models whether it is fresh or stale.
+
+**H's pattern.** It is worse at depth 1 (+1.2) and better at depths 3–5 (−1.4 to −3.2). That is
+because it lacks the gate's absorption cut-off, so it keeps more delay alive down the chain.
+
+**Inherited MAE by depth** (cascade cases) shows the same pattern. Production is 8.67 / 26.25 /
+33.89 / 36.43 / 42.53. M T-honest is 8.67 / 26.18 / 34.02 / 36.42 / 42.35.
+
+**The depth-2 confidence boundary still holds.** Depth-3 total-delay correlation is 0.322–0.330
+across all candidates, against production's 0.327. No candidate lifts depth 3 enough to justify
+quantifying it.
+
+### Feature importance
+
+`feature_importance.csv`.
+
+- Weather features take **9–14%** of total importance in M and H.
+- The top weather features are snow and thunder flags, at ranks 6–15.
+- `RULE_PRED` is the 3rd most important feature in H.
+
+As with notebook 7, high importance alongside no test gain means the trees use weather to fit
+the training period (January snow is well represented there), and that does not carry over to
+late July.
+
+## WL4. Promotion decision: **nothing is promoted**
+
+> **Rule (fixed before results):** *"a candidate is promoted only if it is T-honest, improves
+> cascade MAE by ≥ 0.3 min over production, is not worse than production by > 0.1 min on
+> `CLEAR`, and does not worsen depth-1 or depth-2 integrated MAE. If several qualify, prefer the
+> simplest (R over H over M). If none qualify, nothing is promoted and that is a valid result."*
+
+| Candidate | T-honest | Cascade gain ≥ 0.3 | CLEAR not worse > 0.1 | Depth 1–2 not worse | Qualifies |
+|---|---|---|---|---|---|
+| R T-honest | ✓ | ✗ (+0.007) | ✓ (+0.003) | ✗ (depth 2 +0.03) | **no** |
+| M T-honest | ✓ | ✗ (+0.020) | ✓ (+0.026) | ✗ (+0.001 / +0.013) | **no** |
+| H T-honest | ✓ | ✗ (+2.556) | ✗ (+2.535) | ✗ (+1.20) | **no** |
+| R / M / H T-upper | ✗ | — | — | — | not eligible (upper bound) |
+
+**Consequences.**
+
+- **Step 6 was not run.** There is no `layer4_weather` flag, no API change, no parity extension
+  and no Layer 5 re-run. `results/layer5/` and the Layer 5 baseline are unchanged.
+- No row was added to /performance; the weather section there still describes notebook 7.
+- `results/candidates/weather_l4/config.json` records
+  `"status": "no candidate promoted"`, the timing definitions, the W table and every
+  per-candidate check.
+
+## WL5. Files
+
+**Created.**
+
+- `fdpis_8_weather_propagation.ipynb`
+- `data/weather/hourly_station.parquet` (untracked).
+- `results/candidates/weather_l4/` (untracked):
+  - `step0_effect.csv`, `w_table.csv`, `comparison.csv`, `segments.csv`, `multihop.csv`,
+    `feature_importance.csv`, `config.json`
+  - Model files for M (gate + 3 quantiles × 2 variants), H (3 quantiles × 2 variants) and the
+    no-weather retrain.
+- `results/layer5_baseline_v-layer5-frozen/` (untracked, read-only copy).
+
+**Changed.** `AUDIT_REPORT.md` (this section).
+
+**Not modified.** Every API file, the frontend, `results/layer4/`, `results/layer5/`, and every
+earlier notebook.
+
+## WL6. Plain-language answer
+
+**Does real-time weather at the next airport change how much delay the aircraft carries, and
+is it visible early enough to use?**
+
+**Yes, it changes it, but mostly no, not early enough to use.**
+
+- **The effect is real.** When a late aircraft turns around under a thunderstorm, about 6 more
+  minutes of its lateness carry into the next flight than they would in clear weather. Snow,
+  low cloud and rain add about 1 minute each. Most of what bad weather does at the turnaround
+  is create *new* delay (de-icing, ground stops), not stop the old delay being absorbed.
+- **It is too small, and too poorly timed, to improve the forecast.** At the moment the
+  prediction has to be made — when the inbound flight takes off, typically 2–3 hours before
+  the turnaround — the weather the system can see improves nothing: cascade error changes by
+  +0.01 to +0.02 minutes.
+- **Only the actual turnaround weather helps,** and only on thunderstorm turnarounds (about
+  0.8 minutes better). That is knowable only in hindsight, or with a reliable short-range
+  convective forecast.
+- **The open lever is a forecast product** valid at the turnaround time, which this repository
+  does not have. This is the same conclusion as notebook 7, now reached for Layer 4 by a
+  different route.
