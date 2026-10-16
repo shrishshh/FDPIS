@@ -29,3 +29,5 @@ build/
 # OS/editor
 .DS_Store
 .vscode/
+data/
+results/
