@@ -1,4 +1,5 @@
 import type { CrewNotification } from "@/lib/types";
+import { channelName } from "@/components/NotifyStatus";
 
 /** "2026-10-28T09:41:07+00:00" -> "09:41 UTC" */
 function utcTime(iso: string | null): string {
@@ -8,13 +9,13 @@ function utcTime(iso: string | null): string {
 
 /**
  * How a notification left the system, in the words the operator should see.
- * Green only when WhatsApp actually accepted the message.
+ * Green only when the live channel actually accepted the message.
  */
 export function deliveryLabel(n: CrewNotification): { text: string; tone: "sent" | "failed" | "simulated" } {
   const d = n.delivery;
-  if (d?.channel === "whatsapp" && d.status === "sent") {
+  if ((d?.channel === "telegram" || d?.channel === "whatsapp") && d.status === "sent") {
     const t = utcTime(d.sentAt);
-    return { text: `Delivered via WhatsApp${t ? ` · ${t}` : ""}`, tone: "sent" };
+    return { text: `Delivered via ${channelName(d.channel)}${t ? ` · ${t}` : ""}`, tone: "sent" };
   }
   if (d?.status === "already_sent") return { text: "Already delivered", tone: "sent" };
   if (d?.status === "failed") return { text: "Delivery failed - recorded as simulated", tone: "failed" };

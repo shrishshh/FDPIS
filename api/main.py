@@ -510,8 +510,9 @@ def alerts(date: str = Query(..., description="YYYY-MM-DD"),
 @app.post("/api/alerts/{alert_id}/notify", response_model=schemas.Notification)
 def notify_alert(alert_id: int):
     """Create a crew notification from an alert. SIMULATED unless the server has
-    a live WhatsApp demo channel configured (api/notifier.py); then it is sent
-    once to the single demo recipient. The provider can never fail this call."""
+    a live demo channel (Telegram or WhatsApp) configured (api/notifier.py); then
+    it is sent once to the single demo recipient. The provider can never fail
+    this call."""
     alert = layer5.REGISTRY.get(alert_id)
     if alert is None:
         raise HTTPException(404, f"no alert #{alert_id} (alerts are registered when a feed or "
@@ -527,7 +528,7 @@ def notify_alert(alert_id: int):
 
 @app.get("/api/notify/status", response_model=schemas.NotifyStatus)
 def notify_status():
-    """Whether notifications go to a live WhatsApp demo channel. No secrets, no number."""
+    """Whether notifications go to a live demo channel, and which. No secrets, no ids."""
     return notifier.status()
 
 
@@ -535,7 +536,8 @@ def notify_status():
 def notifications():
     """The notification outbox, newest first. Simulated unless a record's
     delivery says it was sent."""
-    live = notifier.is_live()
+    ch = notifier.channel()
+    live = ch != "simulated"
     return {"simulated": not live,
-            "notice": notifier.LIVE_OUTBOX_NOTICE if live else layer5_notify.NOTICE,
+            "notice": notifier.live_outbox_notice(ch) if live else layer5_notify.NOTICE,
             "notifications": layer5_notify.outbox()}

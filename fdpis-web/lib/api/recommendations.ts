@@ -124,7 +124,7 @@ interface RawNotification {
   simulated: boolean;
   notice: string;
   delivery?: {
-    channel: "whatsapp" | "simulated";
+    channel: "telegram" | "whatsapp" | "simulated";
     status: "sent" | "already_sent" | "failed" | "simulated";
     provider_id?: string | null;
     sent_at?: string | null;
@@ -328,14 +328,14 @@ function toNotification(n: RawNotification): CrewNotification {
 
 /**
  * POST /api/alerts/{id}/notify - write a notification to the outbox. SIMULATED
- * unless the server has the live WhatsApp demo channel on; never retried, so a
- * live message is not sent twice (the server is also idempotent per alert).
+ * unless the server has a live demo channel on; never retried, so a live
+ * message is not sent twice (the server is also idempotent per alert).
  */
 export async function notifyCrew(alertId: number): Promise<CrewNotification> {
   return toNotification(await apiPost<RawNotification>(`/api/alerts/${alertId}/notify`, {}));
 }
 
-/** GET /api/notify/status - is the live WhatsApp demo channel on? */
+/** GET /api/notify/status - is a live demo channel on, and which? */
 export async function getNotifyStatus(): Promise<NotifyStatus> {
   return apiGet<NotifyStatus>("/api/notify/status");
 }

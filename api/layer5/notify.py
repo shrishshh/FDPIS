@@ -65,13 +65,15 @@ def validate(alert: dict) -> None:
 def create(alert: dict, delivery: dict | None = None, live: bool = False,
            message: str | None = None) -> dict:
     """Append an outbox record. By default exactly the simulated record. With
-    live=True (api/notifier.py, after a successful WhatsApp send) the status
-    fields say it was delivered and `message` is the text actually sent."""
+    live=True (api/notifier.py, after a successful live send) the status
+    fields name the channel it was delivered on and `message` is the text
+    actually sent."""
     validate(alert)
     global _NEXT_ID
     role, channel, msg = compose(alert)
     if live:
-        from ..notifier import LIVE_NOTICE, LIVE_STATUS
+        from ..notifier import live_notice, live_status
+        live_ch = (delivery or {}).get("channel", "whatsapp")
     with _LOCK:
         rec = {
             "notification_id": _NEXT_ID,
@@ -80,9 +82,9 @@ def create(alert: dict, delivery: dict | None = None, live: bool = False,
             "channel": channel,
             "message": message if (live and message) else msg,
             "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "status": LIVE_STATUS if live else STATUS,
+            "status": live_status(live_ch) if live else STATUS,
             "simulated": not live,
-            "notice": LIVE_NOTICE if live else NOTICE,
+            "notice": live_notice(live_ch) if live else NOTICE,
             "alert": {k: alert.get(k) for k in ("rule_id", "severity", "tail", "date",
                                                 "profile", "deadline_local", "deadline_station")},
         }

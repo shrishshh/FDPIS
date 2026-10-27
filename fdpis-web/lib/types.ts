@@ -330,9 +330,12 @@ export interface RuleProfile {
   disclosure: string;
 }
 
-/** How a notification left the system: simulated, or the live WhatsApp demo channel. */
+/** A live demo channel the API can deliver notifications on. */
+export type LiveChannel = "telegram" | "whatsapp";
+
+/** How a notification left the system: simulated, or a live demo channel. */
 export interface NotificationDelivery {
-  channel: "whatsapp" | "simulated";
+  channel: LiveChannel | "simulated";
   status: "sent" | "already_sent" | "failed" | "simulated";
   providerId: string | null;
   sentAt: string | null;
@@ -340,8 +343,8 @@ export interface NotificationDelivery {
 }
 
 /**
- * A crew notification. SIMULATED unless `delivery` says it was sent over the
- * live WhatsApp demo channel to the single demo recipient.
+ * A crew notification. SIMULATED unless `delivery` says it was sent over a
+ * live demo channel (Telegram or WhatsApp) to the single demo recipient.
  */
 export interface CrewNotification {
   notificationId: number;
@@ -359,7 +362,7 @@ export interface CrewNotification {
 
 export interface NotifyStatus {
   live: boolean;
-  channel: "whatsapp" | "simulated";
+  channel: LiveChannel | "simulated";
 }
 
 export interface Cascade {

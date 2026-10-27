@@ -1,43 +1,77 @@
-"""Optional live delivery of crew notifications to ONE demo recipient over the
-Twilio WhatsApp API (sandbox). Off unless every variable below is set.
+"""Optional live delivery of crew notifications to ONE demo recipient, over
+Telegram (Bot API) or WhatsApp (Twilio). Off unless every variable for the
+chosen channel is set.
 
-    NOTIFY_MODE            "simulated" (default) | "whatsapp"
-    TWILIO_ACCOUNT_SID     required for live
-    TWILIO_AUTH_TOKEN      required for live
-    NOTIFY_TO              required for live, e.g. whatsapp:+91XXXXXXXXXX
-    TWILIO_WHATSAPP_FROM   default whatsapp:+17372508034 (the sandbox sender)
+    NOTIFY_MODE            "simulated" (default) | "telegram" | "whatsapp"
     NOTIFY_MAX_LIVE        live send attempts per process, default 20
+
+  telegram (both required):
+    TELEGRAM_BOT_TOKEN     bot token from @BotFather
+    TELEGRAM_CHAT_ID       the demo recipient's chat id
+
+  whatsapp (Twilio; free-form text needs a sender that may send it - a trial
+  number only sends pre-approved templates, error 21654):
+    TWILIO_ACCOUNT_SID     required
+    TWILIO_AUTH_TOKEN      required
+    NOTIFY_TO              required, e.g. whatsapp:+91XXXXXXXXXX
+    TWILIO_WHATSAPP_FROM   default whatsapp:+17372508034
 
 Anything missing or invalid -> behaviour is exactly the simulated outbox of
 api/layer5/notify.py. The provider can never break the endpoint: every error is
-caught and reduced to a short message that never contains the account SID,
-the token or the recipient number (scrubbed as a second line of defence).
+caught and reduced to a short message that never contains a token, SID, chat
+id or recipient number (scrubbed as a second line of defence).
 
-Values are read from the environment on every call and never logged.
+Values are read from the environment on every call and never logged. httpx's
+own request logging is raised to WARNING here because it logs the request URL
+at INFO, and both providers put a credential in the URL (the Twilio account
+SID; the whole Telegram bot token).
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Optional
 
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
 DEFAULT_FROM = "whatsapp:+17372508034"
 DEFAULT_MAX_LIVE = 20
 TIMEOUT_S = 8.0
 TWILIO_URL = "https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+TELEGRAM_URL = "https://api.telegram.org/bot{token}/sendMessage"
 MAX_MESSAGE_CHARS = 600
 
-LIVE_STATUS = "DELIVERED via WhatsApp (demo recipient)"
-LIVE_NOTICE = ("Delivered by WhatsApp to the single demo recipient configured on the server. "
-               "Recipients named in the message are roles, not people: airline crew rosters "
-               "are not public.")
+CHANNELS = ("telegram", "whatsapp")
+_REQUIRED = {"telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"),
+             "whatsapp": ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "NOTIFY_TO")}
+_NAME = {"telegram": "Telegram", "whatsapp": "WhatsApp"}
 
-LIVE_OUTBOX_NOTICE = ("A live WhatsApp demo channel is enabled: entries marked as delivered "
-                      "were sent to the single demo recipient configured on the server. All "
-                      "other entries are simulated. Recipients named in messages are roles, not "
-                      "people, because airline crew rosters are not public.")
+
+def live_status(ch: str) -> str:
+    return f"DELIVERED via {_NAME[ch]} (demo recipient)"
+
+
+def live_notice(ch: str) -> str:
+    return (f"Delivered by {_NAME[ch]} to the single demo recipient configured on the server. "
+            "Recipients named in the message are roles, not people: airline crew rosters "
+            "are not public.")
+
+
+def live_outbox_notice(ch: str) -> str:
+    return (f"A live {_NAME[ch]} demo channel is enabled: entries marked as delivered "
+            "were sent to the single demo recipient configured on the server. All "
+            "other entries are simulated. Recipients named in messages are roles, not "
+            "people, because airline crew rosters are not public.")
+
+
+# WhatsApp wording, kept as constants for existing callers.
+LIVE_STATUS = live_status("whatsapp")
+LIVE_NOTICE = live_notice("whatsapp")
+LIVE_OUTBOX_NOTICE = live_outbox_notice("whatsapp")
 
 _LOCK = Lock()                 # serialises live sends: check, send and record are atomic
 _SENT: dict[int, dict] = {}    # alert id -> the outbox record of its successful live send
@@ -50,21 +84,32 @@ def _env(name: str) -> str:
 
 
 def _secrets() -> list[str]:
-    vals = [_env("TWILIO_ACCOUNT_SID"), _env("TWILIO_AUTH_TOKEN"), _env("NOTIFY_TO")]
+    vals = [_env("TWILIO_ACCOUNT_SID"), _env("TWILIO_AUTH_TOKEN"), _env("NOTIFY_TO"),
+            _env("TELEGRAM_BOT_TOKEN"), _env("TELEGRAM_CHAT_ID")]
     to = _env("NOTIFY_TO")
     if to:
         bare = to.split(":", 1)[-1]
         vals += [bare, bare.lstrip("+")]
-    return [v for v in vals if len(v) >= 4]
-
-
-def is_live() -> bool:
-    return (_env("NOTIFY_MODE").lower() == "whatsapp"
-            and all(_env(k) for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "NOTIFY_TO")))
+    token = _env("TELEGRAM_BOT_TOKEN")
+    if ":" in token:                            # "<bot id>:<secret>": the secret part alone too
+        vals.append(token.split(":", 1)[1])
+    chat = _env("TELEGRAM_CHAT_ID")
+    if chat.startswith("-"):                    # group ids are negative
+        vals.append(chat.lstrip("-"))
+    # Longest first, so a whole token is replaced before any part of it.
+    return sorted({v for v in vals if len(v) >= 4}, key=len, reverse=True)
 
 
 def channel() -> str:
-    return "whatsapp" if is_live() else "simulated"
+    """The live channel the server is configured for, or "simulated"."""
+    mode = _env("NOTIFY_MODE").lower()
+    if mode in CHANNELS and all(_env(k) for k in _REQUIRED[mode]):
+        return mode
+    return "simulated"
+
+
+def is_live() -> bool:
+    return channel() != "simulated"
 
 
 def max_live() -> int:
@@ -110,6 +155,36 @@ def send_whatsapp(body: str) -> dict:
         name = type(e).__name__
         err = "provider timeout" if "Timeout" in name else f"provider error ({name})"
         return {"channel": "whatsapp", "status": "failed", "error": scrub(err)}
+
+
+def send_telegram(body: str) -> dict:
+    """POST one message through the Telegram Bot API. Never raises."""
+    token, chat = _env("TELEGRAM_BOT_TOKEN"), _env("TELEGRAM_CHAT_ID")
+    try:
+        import httpx
+
+        r = httpx.post(TELEGRAM_URL.format(token=token),
+                       data={"chat_id": chat, "text": body}, timeout=TIMEOUT_S)
+        try:
+            j = r.json()
+        except ValueError:
+            j = {}
+        if r.status_code == 200 and j.get("ok") is True:
+            mid = (j.get("result") or {}).get("message_id")
+            return {"channel": "telegram", "status": "sent",
+                    "provider_id": None if mid is None else str(mid)}
+        desc = j.get("description")
+        head = (f"provider returned HTTP {r.status_code}" if r.status_code != 200
+                else "provider returned ok=false")
+        err = head + (f" (Telegram: {desc})" if desc else "")
+        return {"channel": "telegram", "status": "failed", "error": scrub(err)}
+    except Exception as e:                      # timeouts, DNS, TLS, bad config ...
+        name = type(e).__name__
+        err = "provider timeout" if "Timeout" in name else f"provider error ({name})"
+        return {"channel": "telegram", "status": "failed", "error": scrub(err)}
+
+
+_SENDERS = {"telegram": send_telegram, "whatsapp": send_whatsapp}
 
 
 # --------------------------------------------------------------- message ---
@@ -185,7 +260,8 @@ def deliver(alert: dict, make_record) -> dict:
     alert id, at most max_live() attempts per process; a sent record carries
     the message actually delivered and status fields that say so."""
     global _ATTEMPTS
-    if not is_live():
+    ch = channel()
+    if ch == "simulated":
         return make_record({"channel": "simulated", "status": "simulated",
                             "provider_id": None, "sent_at": None, "error": None})
     with _LOCK:
@@ -200,21 +276,21 @@ def deliver(alert: dict, make_record) -> dict:
         from .layer5.notify import compose
         role, role_channel, _ = compose(alert)
         body = build_message(alert, role, role_channel)
-        result = send_whatsapp(body)
+        result = _SENDERS[ch](body)
         if result["status"] == "sent":
-            rec = make_record({"channel": "whatsapp", "status": "sent",
+            rec = make_record({"channel": ch, "status": "sent",
                                "provider_id": result.get("provider_id"), "sent_at": _now(),
                                "error": None},
                               live=True, message=body)
             _SENT[aid] = rec
             return rec
-        return make_record({"channel": "whatsapp", "status": "failed", "provider_id": None,
+        return make_record({"channel": ch, "status": "failed", "provider_id": None,
                             "sent_at": None, "error": result.get("error")})
 
 
 def status() -> dict:
-    live = is_live()
-    return {"live": live, "channel": "whatsapp" if live else "simulated"}
+    ch = channel()
+    return {"live": ch != "simulated", "channel": ch}
 
 
 def _reset_for_tests() -> None:

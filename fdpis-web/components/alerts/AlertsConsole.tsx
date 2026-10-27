@@ -5,7 +5,7 @@ import { BellRing, Check, Inbox, Send } from "lucide-react";
 import type { AlertFeed, CrewModel, CrewNotification, RuleAlert } from "@/lib/types";
 import { getAlertFeed, getNotifications, notifyCrew } from "@/lib/api";
 import { useScope } from "@/components/DataScope";
-import { useNotifyStatus } from "@/components/NotifyStatus";
+import { liveChannelName, useNotifyStatus } from "@/components/NotifyStatus";
 import { DeliveryBadge } from "@/components/alerts/DeliveryLabel";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import {
@@ -51,7 +51,8 @@ export function AlertsConsole() {
   const [outbox, setOutbox] = useState<{ notice: string; notifications: CrewNotification[] } | null>(null);
   const [sending, setSending] = useState<Set<number>>(new Set());
   const notifyStatus = useNotifyStatus();
-  const liveChannel = notifyStatus?.live === true;
+  const liveName = liveChannelName(notifyStatus);     // "Telegram" | "WhatsApp" | null
+  const liveChannel = liveName !== null;
   const [nonce, setNonce] = useState(0);
   const [crewModel, setCrewModel] = useState<CrewModel>("single");
 
@@ -117,13 +118,13 @@ export function AlertsConsole() {
         {notifyStatus ? (
           <span
             title={liveChannel
-              ? "Notify crew sends one WhatsApp message to the single demo recipient configured on the server."
+              ? `Notify crew sends one ${liveName} message to the single demo recipient configured on the server.`
               : "Notify crew writes a SIMULATED record to the outbox. Nothing is sent."}
             className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.6875rem] font-semibold ring-1 ring-inset ${
               liveChannel ? "bg-[#eaf7ea] text-[#0a7c0a] ring-[#bfe3bf]" : "bg-ink-100 text-ink-600 ring-ink-200"
             }`}
           >
-            {liveChannel ? "Live channel: WhatsApp" : "Simulated"}
+            {liveChannel ? `Live channel: ${liveName}` : "Simulated"}
           </span>
         ) : null}
         <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -158,7 +159,7 @@ export function AlertsConsole() {
       ) : null}
 
       {tab === "outbox" ? (
-        <Outbox outbox={outbox} live={liveChannel} />
+        <Outbox outbox={outbox} liveName={liveName} />
       ) : error ? (
         <ErrorState error={error} context="Could not load the crew alert feed" onRetry={() => setNonce((n) => n + 1)} />
       ) : loading || !feed ? (
@@ -275,7 +276,7 @@ export function AlertsConsole() {
                                 onClick={() => notify(a)}
                                 disabled={sending.has(a.id)}
                                 title={liveChannel
-                                  ? "Sends one WhatsApp message to the demo recipient and records it in the outbox."
+                                  ? `Sends one ${liveName} message to the demo recipient and records it in the outbox.`
                                   : "Writes a SIMULATED notification to the outbox. Nothing is sent."}
                               >
                                 <Send className="h-3.5 w-3.5" aria-hidden />
@@ -335,23 +336,24 @@ function Summary({ feed }: { feed: AlertFeed }) {
 
 function Outbox({
   outbox,
-  live,
+  liveName,
 }: {
   outbox: { notice: string; notifications: CrewNotification[] } | null;
-  live: boolean;
+  /** The live channel's display name, or null when notifications are simulated. */
+  liveName: string | null;
 }) {
   return (
     <section className="space-y-3">
       <div className="rounded-xl border border-ink-300 bg-ink-50 px-4 py-3 text-xs font-semibold leading-relaxed text-ink-700">
-        {live ? "OUTBOX - LIVE WHATSAPP DEMO CHANNEL." : "SIMULATED OUTBOX."}{" "}
+        {liveName ? `OUTBOX - LIVE ${liveName.toUpperCase()} DEMO CHANNEL.` : "SIMULATED OUTBOX."}{" "}
         {outbox?.notice ??
           "No SMS, email or push service is connected. Recipients are roles, not people."}
       </div>
       {!outbox || outbox.notifications.length === 0 ? (
         <EmptyState
           title="Outbox is empty"
-          detail={live
-            ? "Acknowledge an alert, then choose Notify crew to send one WhatsApp message to the demo recipient."
+          detail={liveName
+            ? `Acknowledge an alert, then choose Notify crew to send one ${liveName} message to the demo recipient.`
             : "Acknowledge an alert, then choose Notify crew to write a simulated notification here."}
         />
       ) : (

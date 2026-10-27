@@ -1,14 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { NotifyStatus } from "@/lib/types";
+import type { LiveChannel, NotifyStatus } from "@/lib/types";
 import { getNotifyStatus } from "@/lib/api";
 
 // One request per page load, shared by every component that asks.
 let pending: Promise<NotifyStatus> | null = null;
 
+/** "telegram" -> "Telegram", "whatsapp" -> "WhatsApp". */
+export function channelName(ch: LiveChannel): string {
+  return ch === "telegram" ? "Telegram" : "WhatsApp";
+}
+
+/** The live channel's display name, or null when notifications are simulated. */
+export function liveChannelName(status: NotifyStatus | null): string | null {
+  return status?.live && status.channel !== "simulated" ? channelName(status.channel) : null;
+}
+
 /**
- * Whether the API sends notifications over the live WhatsApp demo channel.
+ * Whether the API sends notifications over a live demo channel, and which.
  * null until known; any failure reads as simulated, which is the safe claim.
  */
 export function useNotifyStatus(): NotifyStatus | null {
@@ -29,6 +39,6 @@ export function useNotifyStatus(): NotifyStatus | null {
 
 /** The footer's notification clause, true to the server's current mode. */
 export function NotificationsClause() {
-  const status = useNotifyStatus();
-  return <>{status?.live ? "Live WhatsApp channel enabled (demo recipient)." : "notifications are simulated."}</>;
+  const name = liveChannelName(useNotifyStatus());
+  return <>{name ? `Live ${name} channel enabled (demo recipient).` : "notifications are simulated."}</>;
 }
