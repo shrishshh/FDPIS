@@ -329,6 +329,15 @@ class AlertFeed(BaseModel):
     alerts: list[Alert]
 
 
+class Delivery(BaseModel):
+    """How a notification left (or did not leave) the system."""
+    channel: Literal["whatsapp", "simulated"]
+    status: Literal["sent", "already_sent", "failed", "simulated"]
+    provider_id: Optional[str] = None
+    sent_at: Optional[str] = None
+    error: Optional[str] = None
+
+
 class Notification(BaseModel):
     notification_id: int
     alert_id: int
@@ -336,13 +345,19 @@ class Notification(BaseModel):
     channel: Literal["SMS", "crew app push"]
     message: str
     created_utc: str
-    status: Literal["SIMULATED — not sent"]
-    simulated: Literal[True]
+    status: Literal["SIMULATED — not sent", "DELIVERED via WhatsApp (demo recipient)"]
+    simulated: bool
     notice: str
     alert: dict
+    delivery: Optional[Delivery] = None
 
 
 class NotificationOutbox(BaseModel):
-    simulated: Literal[True] = True
+    simulated: bool = True
     notice: str
     notifications: list[Notification]
+
+
+class NotifyStatus(BaseModel):
+    live: bool
+    channel: Literal["whatsapp", "simulated"]

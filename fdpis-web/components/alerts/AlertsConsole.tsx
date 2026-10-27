@@ -5,6 +5,8 @@ import { BellRing, Check, Inbox, Send } from "lucide-react";
 import type { AlertFeed, CrewModel, CrewNotification, RuleAlert } from "@/lib/types";
 import { getAlertFeed, getNotifications, notifyCrew } from "@/lib/api";
 import { useScope } from "@/components/DataScope";
+import { useNotifyStatus } from "@/components/NotifyStatus";
+import { DeliveryBadge } from "@/components/alerts/DeliveryLabel";
 import { EmptyState, ErrorState, LoadingState } from "@/components/States";
 import {
   ProfileSwitcher, RulesDisclosure, SeverityChip, useRuleProfile,
@@ -47,6 +49,9 @@ export function AlertsConsole() {
   const [acknowledged, setAcknowledged] = useState<Set<number>>(new Set());
   const [notified, setNotified] = useState<Map<number, CrewNotification>>(new Map());
   const [outbox, setOutbox] = useState<{ notice: string; notifications: CrewNotification[] } | null>(null);
+  const [sending, setSending] = useState<Set<number>>(new Set());
+  const notifyStatus = useNotifyStatus();
+  const liveChannel = notifyStatus?.live === true;
   const [nonce, setNonce] = useState(0);
   const [crewModel, setCrewModel] = useState<CrewModel>("single");
 
@@ -73,12 +78,20 @@ export function AlertsConsole() {
   }, [tab, loadOutbox]);
 
   async function notify(a: RuleAlert) {
+    if (sending.has(a.id)) return;           // a double-click never sends twice
+    setSending((s) => new Set(s).add(a.id));
     try {
       const n = await notifyCrew(a.id);
       setNotified((m) => new Map(m).set(a.id, n));
       loadOutbox();
     } catch (e) {
       setError(e);
+    } finally {
+      setSending((s) => {
+        const next = new Set(s);
+        next.delete(a.id);
+        return next;
+      });
     }
   }
 
@@ -101,6 +114,18 @@ export function AlertsConsole() {
             </button>
           ))}
         </div>
+        {notifyStatus ? (
+          <span
+            title={liveChannel
+              ? "Notify crew sends one WhatsApp message to the single demo recipient configured on the server."
+              : "Notify crew writes a SIMULATED record to the outbox. Nothing is sent."}
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.6875rem] font-semibold ring-1 ring-inset ${
+              liveChannel ? "bg-[#eaf7ea] text-[#0a7c0a] ring-[#bfe3bf]" : "bg-ink-100 text-ink-600 ring-ink-200"
+            }`}
+          >
+            {liveChannel ? "Live channel: WhatsApp" : "Simulated"}
+          </span>
+        ) : null}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <label className="text-xs font-semibold text-ink-500" htmlFor="crew-model">Crew model</label>
           <select
@@ -133,7 +158,7 @@ export function AlertsConsole() {
       ) : null}
 
       {tab === "outbox" ? (
-        <Outbox outbox={outbox} />
+        <Outbox outbox={outbox} live={liveChannel} />
       ) : error ? (
         <ErrorState error={error} context="Could not load the crew alert feed" onRetry={() => setNonce((n) => n + 1)} />
       ) : loading || !feed ? (
@@ -237,20 +262,26 @@ export function AlertsConsole() {
                               <Check className="h-3.5 w-3.5" aria-hidden />
                               Acknowledge
                             </button>
-                          ) : sent ? (
-                            <span className="text-xs font-semibold text-ink-500" title={sent.message}>
-                              Notified &middot; simulated
+                          ) : sent && sent.delivery?.status !== "failed" ? (
+                            <span title={sent.message}>
+                              <DeliveryBadge notification={sent} />
                             </span>
                           ) : (
-                            <button
-                              type="button"
-                              className="btn-secondary h-8 px-2.5 text-xs"
-                              onClick={() => notify(a)}
-                              title="Writes a SIMULATED notification to the outbox. Nothing is sent."
-                            >
-                              <Send className="h-3.5 w-3.5" aria-hidden />
-                              Notify crew
-                            </button>
+                            <span className="inline-flex flex-col items-end gap-1">
+                              {sent ? <DeliveryBadge notification={sent} /> : null}
+                              <button
+                                type="button"
+                                className="btn-secondary h-8 px-2.5 text-xs"
+                                onClick={() => notify(a)}
+                                disabled={sending.has(a.id)}
+                                title={liveChannel
+                                  ? "Sends one WhatsApp message to the demo recipient and records it in the outbox."
+                                  : "Writes a SIMULATED notification to the outbox. Nothing is sent."}
+                              >
+                                <Send className="h-3.5 w-3.5" aria-hidden />
+                                {sending.has(a.id) ? "Sending…" : sent ? "Retry" : "Notify crew"}
+                              </button>
+                            </span>
                           )}
                         </td>
                       </tr>
@@ -302,26 +333,33 @@ function Summary({ feed }: { feed: AlertFeed }) {
   );
 }
 
-function Outbox({ outbox }: { outbox: { notice: string; notifications: CrewNotification[] } | null }) {
+function Outbox({
+  outbox,
+  live,
+}: {
+  outbox: { notice: string; notifications: CrewNotification[] } | null;
+  live: boolean;
+}) {
   return (
     <section className="space-y-3">
       <div className="rounded-xl border border-ink-300 bg-ink-50 px-4 py-3 text-xs font-semibold leading-relaxed text-ink-700">
-        SIMULATED OUTBOX. {outbox?.notice ??
+        {live ? "OUTBOX - LIVE WHATSAPP DEMO CHANNEL." : "SIMULATED OUTBOX."}{" "}
+        {outbox?.notice ??
           "No SMS, email or push service is connected. Recipients are roles, not people."}
       </div>
       {!outbox || outbox.notifications.length === 0 ? (
         <EmptyState
           title="Outbox is empty"
-          detail="Acknowledge an alert, then choose Notify crew to write a simulated notification here."
+          detail={live
+            ? "Acknowledge an alert, then choose Notify crew to send one WhatsApp message to the demo recipient."
+            : "Acknowledge an alert, then choose Notify crew to write a simulated notification here."}
         />
       ) : (
         <ul className="space-y-3">
           {outbox.notifications.map((n) => (
             <li key={n.notificationId} className="card card-pad">
               <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="rounded-full bg-ink-900 px-2 py-0.5 font-bold uppercase tracking-[0.06em] text-white">
-                  {n.status}
-                </span>
+                <DeliveryBadge notification={n} />
                 <span className="font-semibold text-ink-800">{n.recipientRole}</span>
                 <span className="text-ink-400">via {n.channel}</span>
                 <span className="ml-auto text-ink-400">

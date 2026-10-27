@@ -16,3 +16,6 @@ numpy==2.4.6
 pyarrow==25.0.1
 xgboost==3.2.0
 airportsdata==20260905
+
+# Live WhatsApp demo channel (api/notifier.py); imported only when a live send happens.
+httpx==0.28.1

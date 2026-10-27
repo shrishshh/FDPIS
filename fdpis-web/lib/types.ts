@@ -330,17 +330,36 @@ export interface RuleProfile {
   disclosure: string;
 }
 
-/** A SIMULATED notification. Nothing is ever sent. */
+/** How a notification left the system: simulated, or the live WhatsApp demo channel. */
+export interface NotificationDelivery {
+  channel: "whatsapp" | "simulated";
+  status: "sent" | "already_sent" | "failed" | "simulated";
+  providerId: string | null;
+  sentAt: string | null;
+  error: string | null;
+}
+
+/**
+ * A crew notification. SIMULATED unless `delivery` says it was sent over the
+ * live WhatsApp demo channel to the single demo recipient.
+ */
 export interface CrewNotification {
   notificationId: number;
   alertId: number;
   recipientRole: string;
+  /** The channel the role would be reached on in operation (not the demo channel). */
   channel: "SMS" | "crew app push";
   message: string;
   createdUtc: string;
   status: string;
-  simulated: true;
+  simulated: boolean;
   notice: string;
+  delivery: NotificationDelivery | null;
+}
+
+export interface NotifyStatus {
+  live: boolean;
+  channel: "whatsapp" | "simulated";
 }
 
 export interface Cascade {

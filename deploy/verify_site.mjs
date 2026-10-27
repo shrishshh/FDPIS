@@ -174,14 +174,14 @@ async function alertsChecks() {
   let confirmed = false;
   for (let i = 0; i < 40 && notified && !confirmed; i++) {
     await sleep(500);
-    confirmed = await evaluate(`/Notified · simulated/.test(document.querySelector("main").innerText)`);
+    confirmed = await evaluate(`/Notified · simulated|SIMULATED - not sent|Delivered via WhatsApp|Already delivered|Delivery failed/i.test(document.querySelector("main").innerText)`);
   }
   await evaluate(clickText("/^Outbox/"));
   let outboxItems = 0, outboxSimulated = false;
   for (let i = 0; i < 40 && outboxItems === 0; i++) {
     await sleep(500);
     outboxItems = await evaluate(`document.querySelectorAll("main li").length`);
-    outboxSimulated = await evaluate(`/SIMULATED/.test(document.querySelector("main").innerText)`);
+    outboxSimulated = await evaluate(`/SIMULATED|Delivered via WhatsApp/i.test(document.querySelector("main").innerText)`);
   }
   return { alerts: { rowsFaa: faaRows, rowsDgca: dgcaRows,
                      profileSwitchChangedRows: flipped && faaText !== dgcaText,

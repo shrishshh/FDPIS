@@ -52,29 +52,42 @@ def compose(alert: dict) -> tuple[str, str, str]:
     return role, "SMS", msg
 
 
-def create(alert: dict) -> dict:
+def validate(alert: dict) -> None:
+    """Raise ValueError if this alert must not produce a notification."""
     if alert.get("category") != "crew":
         raise ValueError("only crew alerts can generate a crew notification")
     if alert.get("status") == "deadline_passed":
         raise ValueError("the action deadline had already passed when this alert fired "
                          f"(usable lead {alert.get('usable_lead_minutes')} min); notifying a "
                          "crew now would be useless")
+
+
+def create(alert: dict, delivery: dict | None = None, live: bool = False,
+           message: str | None = None) -> dict:
+    """Append an outbox record. By default exactly the simulated record. With
+    live=True (api/notifier.py, after a successful WhatsApp send) the status
+    fields say it was delivered and `message` is the text actually sent."""
+    validate(alert)
     global _NEXT_ID
     role, channel, msg = compose(alert)
+    if live:
+        from ..notifier import LIVE_NOTICE, LIVE_STATUS
     with _LOCK:
         rec = {
             "notification_id": _NEXT_ID,
             "alert_id": alert["id"],
             "recipient_role": role,
             "channel": channel,
-            "message": msg,
+            "message": message if (live and message) else msg,
             "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "status": STATUS,
-            "simulated": True,
-            "notice": NOTICE,
+            "status": LIVE_STATUS if live else STATUS,
+            "simulated": not live,
+            "notice": LIVE_NOTICE if live else NOTICE,
             "alert": {k: alert.get(k) for k in ("rule_id", "severity", "tail", "date",
                                                 "profile", "deadline_local", "deadline_station")},
         }
+        if delivery is not None:
+            rec["delivery"] = delivery
         _NEXT_ID += 1
         _OUTBOX.append(rec)
         del _OUTBOX[:-OUTBOX_MAX]

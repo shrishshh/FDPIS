@@ -20,7 +20,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config, propagation, schemas
+from . import config, notifier, propagation, schemas
 from .models import StartupError, load_bundle
 from .layer5 import engine as layer5, feed as layer5_feed, notify as layer5_notify
 from .performance_data import PERFORMANCE
@@ -509,18 +509,33 @@ def alerts(date: str = Query(..., description="YYYY-MM-DD"),
 
 @app.post("/api/alerts/{alert_id}/notify", response_model=schemas.Notification)
 def notify_alert(alert_id: int):
-    """Create a SIMULATED crew notification from an alert. Nothing is sent."""
+    """Create a crew notification from an alert. SIMULATED unless the server has
+    a live WhatsApp demo channel configured (api/notifier.py); then it is sent
+    once to the single demo recipient. The provider can never fail this call."""
     alert = layer5.REGISTRY.get(alert_id)
     if alert is None:
         raise HTTPException(404, f"no alert #{alert_id} (alerts are registered when a feed or "
                                  f"recommendation is generated)")
     try:
-        return layer5_notify.create(alert)
+        layer5_notify.validate(alert)            # refuse before anything is sent
+        return notifier.deliver(
+            alert, lambda delivery, live=False, message=None:
+            layer5_notify.create(alert, delivery=delivery, live=live, message=message))
     except ValueError as e:
         raise HTTPException(422, str(e))
 
 
+@app.get("/api/notify/status", response_model=schemas.NotifyStatus)
+def notify_status():
+    """Whether notifications go to a live WhatsApp demo channel. No secrets, no number."""
+    return notifier.status()
+
+
 @app.get("/api/notifications", response_model=schemas.NotificationOutbox)
 def notifications():
-    """The SIMULATED notification outbox, newest first."""
-    return {"notice": layer5_notify.NOTICE, "notifications": layer5_notify.outbox()}
+    """The notification outbox, newest first. Simulated unless a record's
+    delivery says it was sent."""
+    live = notifier.is_live()
+    return {"simulated": not live,
+            "notice": notifier.LIVE_OUTBOX_NOTICE if live else layer5_notify.NOTICE,
+            "notifications": layer5_notify.outbox()}

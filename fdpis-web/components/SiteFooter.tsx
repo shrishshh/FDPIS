@@ -1,4 +1,5 @@
 import { Github } from "lucide-react";
+import { NotificationsClause } from "@/components/NotifyStatus";
 
 export const REPO_URL = "https://github.com/shrishshh/FDPIS";
 
@@ -9,7 +10,7 @@ export function SiteFooter() {
         <p className="max-w-3xl">
           <span className="font-semibold text-ink-700">Research prototype.</span> US BTS
           on-time data, Jan/Apr/Jul 2025. Not an operational system. Crew alerts use a
-          hypothetical one-crew-per-aircraft model; notifications are simulated.
+          hypothetical one-crew-per-aircraft model; <NotificationsClause />
         </p>
         <div className="flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-6">
           <p>

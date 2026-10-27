@@ -1,5 +1,6 @@
 import type {
-  AlertFeed, CascadeRequest, CrewModel, CrewNotification, CrewProjection, RecommendationResult,
+  AlertFeed, CascadeRequest, CrewModel, CrewNotification, CrewProjection, NotifyStatus,
+  RecommendationResult,
   RuleAlert, RuleProfile, RuleProfileId, Unverified,
 } from "@/lib/types";
 import { apiGet, apiPost, qs } from "@/lib/api/client";
@@ -120,8 +121,15 @@ interface RawNotification {
   message: string;
   created_utc: string;
   status: string;
-  simulated: true;
+  simulated: boolean;
   notice: string;
+  delivery?: {
+    channel: "whatsapp" | "simulated";
+    status: "sent" | "already_sent" | "failed" | "simulated";
+    provider_id?: string | null;
+    sent_at?: string | null;
+    error?: string | null;
+  } | null;
 }
 
 /* --------------------------------------------------------------- mappers */
@@ -306,15 +314,33 @@ function toNotification(n: RawNotification): CrewNotification {
     status: n.status,
     simulated: n.simulated,
     notice: n.notice,
+    delivery: n.delivery
+      ? {
+          channel: n.delivery.channel,
+          status: n.delivery.status,
+          providerId: n.delivery.provider_id ?? null,
+          sentAt: n.delivery.sent_at ?? null,
+          error: n.delivery.error ?? null,
+        }
+      : null,
   };
 }
 
-/** POST /api/alerts/{id}/notify - write a SIMULATED notification. Nothing is sent. */
+/**
+ * POST /api/alerts/{id}/notify - write a notification to the outbox. SIMULATED
+ * unless the server has the live WhatsApp demo channel on; never retried, so a
+ * live message is not sent twice (the server is also idempotent per alert).
+ */
 export async function notifyCrew(alertId: number): Promise<CrewNotification> {
   return toNotification(await apiPost<RawNotification>(`/api/alerts/${alertId}/notify`, {}));
 }
 
-/** GET /api/notifications - the SIMULATED outbox, newest first. */
+/** GET /api/notify/status - is the live WhatsApp demo channel on? */
+export async function getNotifyStatus(): Promise<NotifyStatus> {
+  return apiGet<NotifyStatus>("/api/notify/status");
+}
+
+/** GET /api/notifications - the outbox, newest first. */
 export async function getNotifications(): Promise<{ notice: string; notifications: CrewNotification[] }> {
   const r = await apiGet<{ notice: string; notifications: RawNotification[] }>("/api/notifications");
   return { notice: r.notice, notifications: r.notifications.map(toNotification) };

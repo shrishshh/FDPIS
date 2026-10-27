@@ -14,4 +14,4 @@ COPY deploy/backend/requirements-test.txt .
 RUN pip install --no-cache-dir -r requirements-test.txt
 COPY --chown=app:app deploy/backend/testdata/results/ results/
 USER app
-CMD ["sh", "-c", "python -m api.test_parity && python -m unittest api.layer5.test_rules"]
+CMD ["sh", "-c", "python -m api.test_parity && python -m unittest api.layer5.test_rules api.test_notifier"]
